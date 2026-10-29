@@ -1,0 +1,1104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DiscTracker 3D</title>
+<meta name="description" content="A live 3D copy of the DiscTracker disc: every tilt, turn and spin of the real disc, and a slow-motion replay of every throw.">
+<style>
+  :root { --hud: rgba(11, 15, 21, 0.8); --line: rgba(255, 255, 255, 0.14); --text: #f3f6fa; --muted: #a7b2c0;
+          --accent: #ff8a1f; --good: #34d399; --bad: #f87171; --warn: #fbbf24; --blue: #60a5fa; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f14; color: var(--text);
+               font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  button, select, input[type=text] { font: inherit; color: var(--text); background: var(--hud); border: 1px solid var(--line); border-radius: 10px; padding: 7px 13px; }
+  button { cursor: pointer; }
+  button:hover { border-color: rgba(255, 255, 255, 0.4); }
+  button.primary { background: var(--accent); color: #1c0e00; border-color: transparent; font-weight: 700; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  select { padding: 5px 8px; max-width: 100%; }
+  [hidden] { display: none !important; }
+  body.embed .noEmbed { display: none !important; }
+  a { color: #9fd3ff; }
+  header { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; z-index: 5; pointer-events: none; }
+  header > * { pointer-events: auto; }
+  .brand { background: var(--hud); border: 1px solid var(--line); border-radius: 12px; padding: 7px 14px; font-weight: 800; }
+  .brand span { color: var(--accent); }
+  .pill { display: inline-flex; gap: 8px; align-items: center; background: var(--hud); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #6b7280; }
+  .pill.on .dot { background: var(--good); box-shadow: 0 0 10px var(--good); }
+  .pill.busy .dot { background: var(--warn); }
+  .pill.bad .dot { background: var(--bad); }
+  .spacer { flex: 1; }
+  .card { background: var(--hud); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  #panel { position: fixed; left: 12px; bottom: 12px; z-index: 3; width: 300px; }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-variant-numeric: tabular-nums; }
+  .kv .v { text-align: right; font-weight: 700; }
+  .kv .s { grid-column: span 2; color: var(--muted); font-size: 12px; margin: -2px 0 3px; }
+  #spinBig { position: fixed; right: 16px; bottom: 12px; z-index: 3; text-align: right; pointer-events: none; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+  #spinBig .n { font-size: clamp(40px, 6vw, 84px); font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1; }
+  #spinBig .u { font-size: 18px; color: var(--muted); margin-left: 4px; }
+  #spinBig .s { font-size: 13px; color: var(--muted); }
+  body.replay #spinBig { bottom: 184px; }
+  body.replay .liveOnly { display: none !important; }
+  #opts { position: fixed; right: 12px; top: 64px; z-index: 3; display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+  #opts label { background: var(--hud); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; font-size: 13px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  #msg { position: fixed; left: 16px; right: 16px; top: 40%; transform: translateY(-50%); z-index: 2; text-align: center; font-size: clamp(18px, 2.4vw, 30px);
+         font-weight: 700; text-shadow: 0 3px 16px rgba(0,0,0,.6); pointer-events: none; }
+  #msg small { display: block; font-size: 0.55em; font-weight: 500; color: var(--muted); margin-top: 6px; }
+  #hint { position: fixed; left: 16px; right: 16px; top: 66px; margin-inline: auto; width: max-content; max-width: min(560px, calc(100vw - 32px));
+          z-index: 6; font-size: 14px; border-color: rgba(255, 138, 31, 0.5); cursor: pointer; }
+  /* how the disc looks */
+  #lookPanel { position: fixed; right: 12px; top: 64px; z-index: 4; width: 310px; max-height: calc(100vh - 80px); overflow: auto; background: rgba(11, 15, 21, 0.96); }
+  .row { display: flex; gap: 8px; align-items: center; margin: 7px 0; flex-wrap: wrap; }
+  .row > label { flex: 1; font-size: 13px; color: var(--muted); }
+  .row input[type=range] { flex: 1.4; min-width: 120px; accent-color: var(--accent); }
+  .row input[type=text] { flex: 1.4; min-width: 120px; padding: 5px 9px; }
+  .row input[type=color] { width: 46px; height: 32px; border: 1px solid var(--line); border-radius: 8px; background: none; padding: 2px; }
+  .row .val { min-width: 42px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .row button { padding: 5px 11px; }
+  .hint { font-size: 12.5px; color: var(--muted); }
+  .hint b { color: var(--text); }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+  /* the throw replay */
+  #replayPanel { position: fixed; left: 12px; bottom: 184px; z-index: 3; width: 360px; max-height: calc(100vh - 260px); overflow: auto; }
+  .flightBig { font-size: 30px; font-weight: 800; color: var(--accent); line-height: 1.1; margin: 2px 0 6px; }
+  .flightBig span { display: block; font-size: 12.5px; font-weight: 500; color: var(--muted); }
+  table.cmp { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; margin-top: 4px; }
+  table.cmp th { font-size: 11.5px; color: var(--muted); font-weight: 600; text-align: right; padding: 0 0 3px 8px; }
+  table.cmp th:first-child, table.cmp td:first-child { text-align: left; padding-left: 0; }
+  table.cmp td { text-align: right; padding: 2px 0 2px 8px; border-top: 1px solid rgba(255,255,255,0.07); }
+  table.cmp td.new { font-weight: 800; color: var(--accent); }
+  table.cmp td.old { color: var(--muted); }
+  .now { margin-top: 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .now b { color: var(--accent); }
+  .notes { margin: 6px 0 0; padding-left: 16px; font-size: 12.5px; color: var(--muted); }
+  .notes li { margin: 2px 0; }
+  details summary { cursor: pointer; font-size: 12.5px; color: #cbd5e1; margin-top: 8px; user-select: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11.5px; color: var(--muted); }
+  .legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+  .ctl { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .ctl button { padding: 5px 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 5px 9px; background: transparent; }
+  .seg button.on { background: rgba(255, 138, 31, 0.22); color: var(--accent); }
+  #timeline { position: fixed; left: 12px; right: 12px; bottom: 12px; height: 162px; z-index: 3; padding: 0; overflow: hidden; }
+  #tl { width: 100%; height: 100%; display: block; cursor: ew-resize; touch-action: none; }
+  @media (max-width: 520px) {
+    header { gap: 6px; } header button, header .pill, .brand { padding: 5px 10px; font-size: 13.5px; }
+    #timeline { height: 150px; } body.replay #replayPanel { bottom: 172px; }
+  }
+  /* short windows (the phone app's 3D tab): a slimmer timeline and replay card so the disc keeps room */
+  @media (max-height: 680px) {
+    #timeline { height: 104px; } body.replay #replayPanel { bottom: 124px; max-height: 30vh; }
+    body.replay #spinBig { bottom: 124px; }
+    .flightBig { font-size: 24px; } table.cmp td { padding: 1px 0 1px 8px; }
+  }
+  @media (max-width: 760px) {
+    #panel { width: auto; right: 12px; bottom: 120px; } #opts { top: auto; bottom: 12px; left: 12px; right: auto; flex-direction: row; flex-wrap: wrap; }
+    #spinBig { bottom: auto; top: 136px; } body.replay #spinBig { display: none; }
+    #hint { top: 136px; }
+    #replayPanel { right: 12px; width: auto; bottom: 184px; max-height: 38vh; } body.replay #opts { display: none; }
+    #lookPanel { left: 12px; right: 12px; width: auto; top: auto; bottom: 12px; max-height: 72vh; z-index: 6; }
+  }
+</style>
+<script type="importmap">{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }</script>
+</head>
+<body>
+<canvas id="view" aria-label="3D view of the disc"></canvas>
+<header>
+  <div class="brand noEmbed">Disc<span>Tracker</span> 3D</div>
+  <div class="pill" id="connPill"><span class="dot"></span><span id="connText">Not connected</span></div>
+  <button class="primary noEmbed" id="connBtn">Connect</button>
+  <span class="spacer"></span>
+  <button id="lastBtn" hidden title="Watch the last throw again, slowed down">Last throw</button>
+  <button id="faceBtn" title="Hold the disc flat in front of you with its label reading normally, then press: the picture turns to match what you see (F)">Face me</button>
+  <button id="levelBtn" title="Snap the picture to gravity (hold the disc still first)">Re-level</button>
+  <button id="lookBtn" title="The label's position, colours, words or a photo of your disc">Look</button>
+  <a class="pill noEmbed" href="sim.html">Simulator</a><a class="pill noEmbed" href="./">Phone app</a>
+</header>
+<div id="opts">
+  <label class="liveOnly" title="Move the picture with the disc (added up from the force readings - approximate, drifts back to the middle)"><input type="checkbox" id="optMove" checked> Show movement</label>
+  <label title="Above ~150 rpm the screen can't show the real spin (it would look like it crawls or runs backwards), so it is shown slowed"><input type="checkbox" id="optSlow" checked> Slow fast spins</label>
+  <label class="liveOnly"><input type="checkbox" id="optTrail" checked> Trail</label>
+  <label><input type="checkbox" id="optAxes"> Disc axes</label>
+</div>
+<div id="lookPanel" class="card" hidden>
+  <h3>How the disc looks <span class="spacer"></span><button id="lookClose" title="Close">✕</button></h3>
+  <div class="row"><label for="lkTurn">Turn the label</label><input type="range" id="lkTurn" min="-180" max="180" step="1"><span class="val" id="lkTurnV">0°</span></div>
+  <div class="row"><button id="lkTurnM5">−5°</button><button id="lkTurnM1">−1°</button><button id="lkTurnP1">+1°</button><button id="lkTurnP5">+5°</button><button id="lkTurn0">0°</button></div>
+  <div class="row hint">Where the label sits depends on where the sensor is inside your disc: turn it until the picture's label lines up with the real one.</div>
+  <div class="row"><label for="lkColor">Disc colour</label><input type="color" id="lkColor"></div>
+  <div class="row"><label for="lkText">Label words</label><input type="text" id="lkText" maxlength="24" spellcheck="false"></div>
+  <div class="row"><label>Photo of your disc</label><button id="lkPhotoBtn">Choose…</button><button id="lkPhotoX" hidden>Remove</button>
+    <input type="file" id="lkPhoto" accept="image/*" hidden></div>
+  <div class="row" id="lkZoomRow" hidden><label for="lkZoom">Photo size</label><input type="range" id="lkZoom" min="0.5" max="2.5" step="0.01"></div>
+  <div class="row hint" id="lkPhotoHint" hidden>Take the photo from straight above, with the label reading normally; then line it up with "Turn the label".</div>
+  <hr>
+  <div class="row hint"><span><b>Turns the wrong way?</b> The picture shows the disc from where you stand. Hold the disc in front of you with its label reading normally and press <b>Face me</b>: then tilting its right edge down tilts the picture's right edge down. Press it again whenever it drifts (always after a hard throw).</span></div>
+  <div class="row"><button id="faceBtn2" class="primary">Face me</button><span class="spacer"></span><button id="lkReset">Reset look</button></div>
+</div>
+<div id="hint" class="card" hidden></div>
+<div id="msg"></div>
+<div id="panel" class="card">
+  <h3>The disc right now</h3>
+  <div class="kv" id="readout"><span>Waiting for the disc…</span><span></span></div>
+</div>
+<div id="replayPanel" class="card" hidden>
+  <h3>Throw replay <span class="spacer"></span><select id="rpSel" title="Earlier throws"></select></h3>
+  <div id="rpTable"></div>
+  <div class="now" id="rpNow"></div>
+  <div class="ctl">
+    <button id="rpPlay" title="Play / pause (space)">Pause</button>
+    <span class="seg" id="rpSpeed"><button data-s="0.05">1/20</button><button data-s="0.1">1/10</button><button data-s="0.25">1/4</button><button data-s="1">real</button></span>
+    <span class="spacer"></span>
+    <button id="rpExit" title="Back to the live disc (Esc)">Back to live</button>
+  </div>
+  <div id="rpMore"></div>
+</div>
+<div id="timeline" class="card" hidden><canvas id="tl" aria-label="The throw over time: force and spin, measured and rebuilt"></canvas></div>
+<div id="spinBig"><div><span class="n" id="rpmN">0</span><span class="u">rpm</span></div><div class="s" id="rpmS"></div></div>
+
+<script src="flight.js?v=2026-10-21b"></script>
+<script src="track.js?v=2026-10-28"></script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { Line2 } from "three/addons/lines/Line2.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+
+const $ = id => document.getElementById(id);
+const D2R = Math.PI / 180, R2D = 180 / Math.PI, GMS = 9.80665, TAU = 2 * Math.PI, MPH = 2.2369363;
+const SVC = "19b10000-e8f2-537e-4f6c-d104768a1214", CMD = "19b10002-e8f2-537e-4f6c-d104768a1214",
+      BTSTREAM = "19b10009-e8f2-537e-4f6c-d104768a1214";
+const CLIP = 32200, ACLIP = 32700;         // raw counts: the gyro (2254 deg/s = 376 rpm) / the accelerometer (16 g) is maxed out
+const Z = new THREE.Vector3(0, 0, 1);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+
+// ================================================================ how the disc looks (kept in this browser)
+const LOOK_KEY = "disc3d.look.v1", LOOK0 = { turn: 0, color: "#ff7a1a", text: "DiscTracker", photo: null, zoom: 1 };
+const look = Object.assign({}, LOOK0, (() => { try { return JSON.parse(localStorage.getItem(LOOK_KEY)) || {}; } catch { return {}; } })());
+function saveLook() { try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); return true; } catch { return false; } }
+
+// ================================================================ orientation from the raw readings
+// Samples arrive in DISC axes (+Z out of the flight plate). The gyro turns the disc; gravity pulls the picture level
+// again whenever the disc is calm (a Mahony filter, so slow gyro drift never builds up). Above 376 rpm the gyro's spin
+// axis is maxed out: the spin then comes from the steady force of the off-centre sensor, w = sqrt(a / r).
+const info = { odr: 416, alsb: 0.000488, glsb: 0.07, bias: [0, 0, 0], radius: 0, batt: 0, seen: false };
+const st = {
+  q: new THREE.Quaternion(), lastSeq: -1, n: 0, rateN: 0, rateT: performance.now(), rate: 0,
+  wz: 0, wzRaw: 0, clipped: false, wSrc: "gyro", a: [0, 0, 1], aMag: 1, rot: 0, still: 0, mode: "–",
+  axy: [0, 0], v: new THREE.Vector3(), p: new THREE.Vector3(), started: false, freeFall: 0, faced: false,
+};
+// Samples per second, by the disc's own clock: pairs of info packets 8-30 s apart (samples counted / milliseconds). Its
+// chip runs a little fast of the nominal 416; 418.6 is what this disc measured, used until the stream says otherwise.
+// Standby or a calibration stops the count while the clock runs on, so a pair spanning one reads low: only rates of
+// 405-430 count, and the middle one is used once two agree within 0.3 %.
+const rateObs = []; let rateRef = null, lastBoot = null;
+function rateNow() {
+  if (rateObs.length < 2) return 418.6;
+  const a = rateObs.slice().sort((x, y) => x - y), m = a[a.length >> 1];
+  return a.filter(r => Math.abs(r - m) < 0.003 * m).length >= 2 ? m : 418.6;
+}
+function onSample(c) {
+  const dt = 1 / rateNow(), GL = info.glsb, AL = info.alsb;
+  const g = [c[0] * GL - info.bias[0], c[1] * GL - info.bias[1], c[2] * GL - info.bias[2]];   // deg/s, zero error removed
+  const a = [c[3] * AL, c[4] * AL, c[5] * AL];
+  const aMag = Math.hypot(a[0], a[1], a[2]);
+  // the off-centre sensor's steady sideways force, averaged over ~0.6 s so gravity (which turns once per spin in the
+  // disc's axes when it spins tilted) cancels out; used for spin above the gyro's range
+  const k = 1 - Math.exp(-dt / 0.6);
+  st.axy[0] += k * (a[0] - st.axy[0]); st.axy[1] += k * (a[1] - st.axy[1]);
+  const clipped = Math.abs(c[2]) >= CLIP;
+  let wz = g[2] * D2R;
+  if (clipped && info.radius > 0.0005) {
+    const wc = Math.sqrt(Math.hypot(st.axy[0], st.axy[1]) * GMS / info.radius);
+    if (wc > Math.abs(wz)) { wz = Math.sign(wz || 1) * wc; st.wSrc = "force"; }
+  } else st.wSrc = clipped ? "maxed" : "gyro";
+  const w = new THREE.Vector3(g[0] * D2R, g[1] * D2R, wz);
+  if (!st.started) {                                          // first sample: start level with gravity
+    st.q.setFromUnitVectors(new THREE.Vector3(a[0], a[1], a[2]).normalize(), new THREE.Vector3(0, 0, 1));
+    st.started = true;
+  }
+  // gravity correction while calm: the gap between where the disc says "down" is and where the picture has it
+  const rotRate = Math.hypot(g[0], g[1], g[2]);
+  if (Math.abs(aMag - 1) < 0.12 && rotRate < 200) {
+    const up = new THREE.Vector3(0, 0, 1).applyQuaternion(st.q.clone().invert());          // world up, in disc axes
+    const am = new THREE.Vector3(a[0], a[1], a[2]).normalize();
+    const e = new THREE.Vector3().crossVectors(am, up);
+    const kp = rotRate < 20 ? 3.0 : 1.0;
+    w.addScaledVector(e, kp);
+  }
+  // integrate: q <- q * exp(w dt / 2)
+  const ang = w.length() * dt;
+  if (ang > 1e-9) st.q.multiply(new THREE.Quaternion().setFromAxisAngle(w.clone().normalize(), ang)).normalize();
+  // movement: the force in world axes minus gravity, added up - with leaks so it can't run away. While it spins, the
+  // steady sideways force of the off-centre sensor is not movement: take it out first.
+  const spinning = Math.abs(g[2]) > 200 || clipped;
+  let am = a;
+  if (spinning) {                                             // its size is w^2 r when the radius is known; its direction from the average
+    const L = Math.hypot(st.axy[0], st.axy[1]) || 1, mag = info.radius > 0.0005 ? wz * wz * info.radius / GMS : L;
+    am = [a[0] - st.axy[0] / L * mag, a[1] - st.axy[1] / L * mag, a[2]];
+  }
+  const fw = new THREE.Vector3(am[0], am[1], am[2]).applyQuaternion(st.q);
+  const accW = fw.clone().sub(new THREE.Vector3(0, 0, 1)).multiplyScalar(GMS);
+  const isStill = rotRate < 15 && Math.abs(aMag - 1) < 0.05;
+  st.still = isStill ? st.still + 1 : 0;
+  const freeFall = aMag < 0.3 + Math.hypot(st.axy[0], st.axy[1]) && Math.abs(a[2]) < 0.3;
+  st.freeFall = freeFall ? st.freeFall + 1 : 0;
+  // spinning on a table or in a hand: about 1 g once the spin's own force is out (a hard pull is far more, and keeps
+  // its speed)
+  const supported = spinning && !freeFall && Math.abs(Math.hypot(am[0], am[1], am[2]) - 1) < 0.5;
+  if (st.still > 40 || supported) st.v.multiplyScalar(0.9);
+  else st.v.addScaledVector(accW, dt);
+  st.v.multiplyScalar(Math.exp(-dt / 0.9));
+  st.p.addScaledVector(st.v, dt);
+  st.p.multiplyScalar(Math.exp(-dt / 1.5));
+  if (st.p.length() > 0.6) st.p.setLength(0.6);
+  if (st.p.z < -0.22) { st.p.z = -0.22; if (st.v.z < 0) st.v.z = 0; }                     // never through the floor
+  st.wz = wz; st.wzRaw = g[2]; st.clipped = clipped; st.a = a; st.aMag = aMag; st.rot = rotRate;
+  st.mode = st.freeFall > 20 ? "in the air" : clipped || Math.abs(g[2]) > 360 ? "spinning" : st.still > 60 ? "still" : "moving";
+  st.n++;
+  // the first time it lies still for a second: turn the picture as if its label faced you (a guess - "Face me" makes it right)
+  if (!st.faced && st.still > 420) { st.faced = true; if (faceMe()) showHint("Turned so the label faces you. If tilting looks back to front, hold the disc with its label reading normally and press <b>Face me</b>.", 9000); }
+}
+
+// ================================================================ packets: readings, the disc's settings, throws
+const LRING = 16384, ring = new Int16Array(LRING * 6), seqs = new Float64Array(LRING).fill(-1);   // ~39 s of readings
+const pendingCaps = [], throwsList = [];
+function parseInfo(dv) {
+  const f = k => dv.getFloat32(16 + 4 * k, true);
+  return { boot: dv.getUint16(2, true), seq: dv.getUint32(4, true), millis: dv.getUint32(8, true), odr: dv.getUint16(12, true) || 416,
+           alsb: f(0), glsb: f(1), bias: [f(2), f(3), f(4)], radius: f(14), batt: f(15) };
+}
+function parseCap(dv) {                                       // a throw's results packet (as sim.html)
+  const f = k => dv.getFloat32(20 + 4 * k, true);
+  return { start: dv.getUint32(2, true), n: dv.getUint16(6, true), rel: dv.getUint16(8, true), liveRel: dv.getUint16(10, true),
+    counted: dv.getUint8(12), src: dv.getUint8(13), flags: dv.getUint16(14, true), end: dv.getUint8(16), sens: dv.getUint8(17),
+    res: Array.from({ length: 10 }, (_, k) => f(k)), tMs: dv.getUint32(60, true), at: performance.now() };
+}
+function onPacket(dv) {
+  if (dv.byteLength < 2) return;
+  const type = dv.getUint8(0);
+  if (type === 2 && dv.byteLength >= 100) {
+    const I = parseInfo(dv);
+    if (lastBoot !== null && I.boot !== lastBoot) {              // the disc restarted: its reading numbers start again at 0
+      st.lastSeq = -1; seqs.fill(-1); pendingCaps.length = 0; rateObs.length = 0; rateRef = null;
+    }
+    lastBoot = I.boot;
+    const span = rateRef ? I.millis - rateRef.millis : -1;
+    if (span >= 8000 && span <= 30000 && I.seq > rateRef.seq) {
+      const r = (I.seq - rateRef.seq) * 1000 / span;
+      if (r > 405 && r < 430) { rateObs.push(r); if (rateObs.length > 9) rateObs.shift(); }
+    }
+    if (!rateRef || span >= 8000 || span < 0) rateRef = I;
+    Object.assign(info, I, { seen: true });
+    return;
+  }
+  if (type === 3 && dv.byteLength >= 64) { pendingCaps.push(parseCap(dv)); tryCaps(); return; }
+  if (type !== 1 || dv.byteLength < 6) return;
+  const n = Math.min(dv.getUint8(1), Math.floor((dv.byteLength - 6) / 12)), seq = dv.getUint32(2, true), c = new Int16Array(6);
+  if (seq + n < st.lastSeq - LRING) { st.lastSeq = -1; seqs.fill(-1); pendingCaps.length = 0; }   // numbers restarted (a missed info packet)
+  for (let j = 0; j < n; j++) {
+    const sq = seq + j, slot = sq % LRING;
+    for (let k = 0; k < 6; k++) c[k] = dv.getInt16(6 + j * 12 + 2 * k, true);
+    ring.set(c, slot * 6); seqs[slot] = sq;
+    if (sq > st.lastSeq) { onSample(c); st.lastSeq = sq; }
+  }
+  st.rateN += n;
+  if (landWatch) watchLanding();
+  if (pendingCaps.length) tryCaps();
+}
+// A throw's results packet: once its readings are all in, cut them out of the buffer and rebuild the throw. The disc's
+// recording stops ~6 readings before the hit it detected (or 116 after its own release mark), so up to EXTRA readings
+// after it come from the stream too - the rest of the flight, for the spin and the end of the flight. Wait for them up
+// to 1.5 s (15 s for the recording's own).
+const EXTRA = 160;
+// After a throw in the open: the first reading more than 4.5 g from the middle of the 12 before it is the landing (or
+// a catch) - its time after release, next to the predicted flight time. Given up after 12 s.
+let landWatch = null;
+function watchLanding() {
+  const w = landWatch, AL = info.alsb;
+  for (; w.next <= st.lastSeq; w.next++) {
+    const sl = w.next % LRING; if (seqs[sl] !== w.next) { w.hist.length = 0; continue; }
+    const a = [ring[sl * 6 + 3] * AL, ring[sl * 6 + 4] * AL, ring[sl * 6 + 5] * AL];
+    if (w.hist.length === 12) {
+      const m = [0, 1, 2].map(k => DiscTrack.median(w.hist.map(h => h[k])));
+      if (Math.hypot(a[0] - m[0], a[1] - m[1], a[2] - m[2]) > 4.5) {
+        w.th.pred.landT = (w.next - w.relSeq) / w.th.rate; landWatch = null;
+        if (rp.on && rp.th === w.th) renderReplayPanel();
+        return;
+      }
+      w.hist.shift();
+    }
+    w.hist.push(a);
+  }
+  if ((st.lastSeq - w.relSeq) / w.th.rate > 12) landWatch = null;
+}
+function tryCaps() {
+  while (pendingCaps.length) {
+    const c = pendingCaps[0], end = c.start + c.n - 1, age = performance.now() - c.at;
+    if (st.lastSeq < end + EXTRA && age < (st.lastSeq >= end ? 1500 : 15000)) return;
+    pendingCaps.shift();
+    if (!c.counted && !(c.res[6] >= 4 && c.res[1] >= 120)) continue;          // handling the disc, not a throw
+    if (c.n < 445) { showHint("A throw came in, but the disc's recording of it was too short to rebuild.", 6000); continue; }
+    let n = c.n; while (n < c.n + EXTRA && seqs[(c.start + n) % LRING] === c.start + n) n++;
+    const S = new Int16Array(n * 6); let missing = 0, first = -1;
+    for (let i = 0; i < n; i++) {
+      const sq = c.start + i, sl = sq % LRING;
+      if (seqs[sl] === sq) { S.set(ring.subarray(sl * 6, sl * 6 + 6), i * 6); if (first < 0) first = i; }
+      else { missing++; if (i) S.copyWithin(i * 6, (i - 1) * 6, i * 6); }      // a lost reading: a copy (the tracker bridges it)
+    }
+    if (first < 0 || missing > 0.2 * c.n) { showHint(`A throw came in, but ${missing} of its ${c.n} readings were lost on the way: no replay for this one.`, 7000); continue; }
+    for (let i = 0; i < first; i++) S.copyWithin(i * 6, first * 6, first * 6 + 6);   // lost at the very start: the first that came
+    let th = null;
+    try { th = analyzeThrow(c, S, missing); } catch (e) { console.error("rebuilding the throw failed", e); }
+    if (!th) continue;
+    if (th.nw.info.longestGap > 3) { showHint(`A throw came in, but ${th.nw.info.longestGap} readings in a row were lost during the pull: no replay for this one.`, 7000); continue; }
+    // picked up, or dropping out of the net: a throw spins - well over 120 rpm by both counts
+    if (Math.abs(th.nw.six.spin) < 120 && !(c.counted && c.res[1] >= 120)) continue;
+    DiscTrack.teach(th.id, c, th.nw, th.disc);
+    if (th.pred) landWatch = { th, relSeq: c.start + th.iRel, next: c.start + th.S.length / 6, hist: [] };
+    throwsList.push(th); if (throwsList.length > 12) throwsList.shift();
+    enterReplay(th);
+  }
+}
+
+// ================================================================ a throw, rebuilt (track.js), ready to replay
+// Scene frame for a replay: Z up, the release at REL_H above the middle of the floor, the throw heading into the
+// screen (+Y), the camera behind and above the thrower's side.
+const FLOOR_Z = -0.35, REL_H = FLOOR_Z + 1.0;
+// the disc being thrown (its drag ratio is learned per disc): the phone app's choice inside it, else the simulator's
+function discName() {
+  if (embedSim && embedSim.disc && embedSim.disc.name) return embedSim.disc.name;
+  try { const s = JSON.parse(localStorage.getItem("disctracker.sim.settings.v1")) || {}; return (s.disc && s.disc.name) || ""; } catch { return ""; }
+}
+function analyzeThrow(c, S, missing) {
+  const n = S.length / 6, disc = discName(), L = DiscTrack.learned(disc), rCal = info.radius > 0.0005;
+  const I = { alsb: info.alsb, glsb: info.glsb, bias: info.bias.slice(), radius: rCal ? info.radius : L.radius, odr: info.odr, rate: rateNow(), kI: L.kI || 0.93,
+              kAero: L.kAero };
+  const o = { iRel: c.rel < n ? c.rel : undefined, spinRpm: c.res[1] > 0 ? c.res[1] : undefined };
+  const nw = DiscTrack.reconstruct(S, I, o), old = DiscTrack.reconstruct(S, I, Object.assign({ old: true }, o));
+  if (!nw.info.rel || !old.info.rel) return null;
+  const rate = 1 / nw.info.dt, iRel = nw.info.iRel, i0 = nw.iStart;
+  const v = nw.info.rel.v, psi = Math.PI / 2 - Math.atan2(v[1], v[0]), cz = Math.cos(psi), sz = Math.sin(psi);
+  const rotZ = p => [cz * p[0] - sz * p[1], sz * p[0] + cz * p[1], p[2]];
+  const qY = new THREE.Quaternion().setFromAxisAngle(Z, psi), pR = nw.info.rel.p;
+  // from 0.3 s before release to just after the hit (or 0.6 s of flight when there's none in the recording)
+  const iImp = nw.info.iImp, hit = iImp < n;
+  const kA = Math.max(i0, iRel - Math.round(0.3 * rate)), kB = hit ? Math.min(n - 1, iImp + 6) : Math.min(n - 1, iRel + Math.round(0.6 * rate)), N = kB - kA + 1;
+  const pos = new Float32Array(N * 3), att = [], spin = new Float32Array(N), spd = new Float32Array(N);
+  const fMeas = new Float32Array(N), fNew = new Float32Array(N), clipA = new Uint8Array(N), gMeas = new Float32Array(N), clipG = new Uint8Array(N);
+  for (let k = kA; k <= kB; k++) {
+    const j = k - kA, P = nw.path[k - i0], p = rotZ([P[0] - pR[0], P[1] - pR[1], P[2] - pR[2]]);
+    pos[j * 3] = p[0]; pos[j * 3 + 1] = p[1]; pos[j * 3 + 2] = p[2] + REL_H;
+    const a = nw.att[k - i0]; att.push(qY.clone().multiply(new THREE.Quaternion(a[1], a[2], a[3], a[0])));
+    spin[j] = nw.wz[k] * 60 / TAU;
+    const vv = nw.vel[k - i0]; spd[j] = Math.hypot(vv[0], vv[1], vv[2]) * MPH;
+    const r = S.subarray(k * 6, k * 6 + 6);
+    fMeas[j] = Math.hypot(r[3], r[4], r[5]) * I.alsb;
+    clipA[j] = Math.abs(r[3]) >= ACLIP || Math.abs(r[4]) >= ACLIP || Math.abs(r[5]) >= ACLIP ? 1 : 0;
+    fNew[j] = Math.hypot(nw.fx[k], nw.fy[k], nw.fz[k]) / GMS;
+    gMeas[j] = Math.abs(r[2] * I.glsb - I.bias[2]) / 6;
+    clipG[j] = Math.abs(r[2]) >= CLIP ? 1 : 0;
+  }
+  // the ghost: the same readings added up as they came - force cut off at 16 g, the gyro's spin stuck at its top -
+  // started from the same point
+  const oi0 = old.iStart, kAl = Math.max(kA, oi0), base = old.path[kAl - oi0], jAl = kAl - kA, ghost = [];
+  for (let k = kAl; k <= kB; k++) {
+    const P = old.path[k - oi0], p = rotZ([P[0] - base[0], P[1] - base[1], P[2] - base[2]]);
+    ghost.push(p[0] + pos[jAl * 3], p[1] + pos[jAl * 3 + 1], p[2] + pos[jAl * 3 + 2]);
+  }
+  const oRel = old.info.iRel, gRel = oRel >= kAl ? (oRel - kAl) * 3 : 0;
+  let accN = 0, gyrN = 0, peak = 0;
+  for (let k = i0; k <= iRel; k++) {
+    const r = S.subarray(k * 6, k * 6 + 6);
+    if (Math.abs(r[3]) >= ACLIP || Math.abs(r[4]) >= ACLIP || Math.abs(r[5]) >= ACLIP) accN++;
+    if (Math.abs(r[2]) >= CLIP) gyrN++;
+    if (k >= kA) peak = Math.max(peak, fNew[k - kA]);
+  }
+  // No hit within the recording and the disc didn't end it on one: thrown in the open. Its flight to the ground is
+  // predicted from the rebuilt release (flight.js, the simulator's model, with the simulator's chosen disc) - a few
+  // seconds of free flight can't be measured: the sensor feels only the air, so a position added up from it drifts
+  // by metres. The page watches the stream for the landing to give the real time in the air next to the prediction.
+  let pred = null;
+  if (!hit && c.end !== 1 && window.DiscFlight) {
+    const sim = (() => { try { return JSON.parse(localStorage.getItem("disctracker.sim.settings.v1")) || {}; } catch { return {}; } })();
+    const cfg = embedSim || { disc: sim.disc, windMph: 0, windFrom: 0 };
+    const disc = Object.assign({ name: "Distance driver", speed: 12, glide: 5, turn: -1, fade: 3 }, cfg.disc || {}), s6 = nw.six, FT = 0.3048;
+    const fl = DiscFlight.simulateFlight({ speedMph: s6.speed, spinRpm: s6.spin, hyzer: s6.hyzer, nose: s6.nose, launch: s6.launch,
+      wobble: nw.info.wobble ?? 2, ccw: !!nw.info.ccw, disc, windMph: +cfg.windMph || 0, windFrom: +cfg.windFrom || 0, heightFt: cfg.heightFt > 0 ? cfg.heightFt : (REL_H - FLOOR_Z) / FT });
+    // flight.js: x down the line, y left, z up (ft) -> here: +Y down the line, +X right, Z up (m)
+    // a release height other than the picture's (the phone app's setting) is eased out over the flight, so the
+    // path still starts at the release point and ends on the grass
+    const z0 = REL_H - FLOOR_Z - (fl.path[0] ? fl.path[0].z * FT : 0), T = fl.timeS || 1;
+    const P = fl.path.map(q => ({ t: q.t, p: [-q.y * FT, q.x * FT, FLOOR_Z + q.z * FT + z0 * Math.max(0, 1 - q.t / T)], n: [-q.ny, q.nx, q.nz] }));
+    pred = { fl, disc, P, spin0: s6.spin * Math.sign(nw.wz[iRel] || (nw.info.ccw ? 1 : -1)), landT: null };
+  }
+  return { c, S, nw, old, I, rate, iRel, kA, kB, N, pos, att, spin, spd, fMeas, fNew, clipA, gMeas, clipG, ghost, pred,
+    relJ: iRel - kA, discRelJ: c.rel - kA, vRel: rotZ(v), vOld: rotZ(old.info.rel.v), oldRelPos: ghost.slice(gRel, gRel + 3),
+    accMs: accN / rate * 1000, gyrMs: gyrN / rate * 1000, peak, relShift: iRel - (nw.info.relGiven ?? iRel), missing, at: new Date(),
+    // the net: where the hit was found, or - when the recording stopped short of it - just past its last reading
+    impact: hit || c.end === 1, netJ: hit ? iImp - kA : N - 1, netBeyond: !hit,
+    id: `${info.boot}-${c.start}-${c.tMs}`, kI: I.kI, kIN: L.kI ? L.nKI : 0, radius: I.radius, disc, nKA: L.nKA, needKA: L.needKA,
+    rSrc: rCal ? "calibrated" : I.radius > 0 ? `learned from ${L.nR} throws` : "" };
+}
+
+// ================================================================ Bluetooth (as sim.html)
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), ms))]);
+let device = null, cmdChar = null, looping = false, userStop = false, connected = false;
+// Inside the phone app (disc3d.html?embed=1 in its Simulate tab): the app owns the Bluetooth connection, passes the
+// raw stream in and sends this page's commands; it also gives the disc and wind the prediction flies with.
+const EMBED = new URLSearchParams(location.search).has("embed") && window.parent !== window;
+let embedSim = null;
+if (EMBED) {
+  document.body.classList.add("embed");
+  window.addEventListener("message", e => {
+    if (e.origin !== location.origin || !e.data) return;
+    const m = e.data;
+    if (m.dt === "pkt") onPacket(new DataView(m.buf));
+    else if (m.dt === "conn") { setConn(m.state); if (m.state === "on") showMsg(""); }
+    else if (m.dt === "sim") embedSim = m;
+  });
+  window.parent.postMessage({ dt: "ready" }, location.origin);
+}
+async function sendCmd(text) {
+  if (EMBED) { window.parent.postMessage({ dt: "cmd", text }, location.origin); return true; }
+  if (!cmdChar) return false;
+  try { const d = new TextEncoder().encode(text); await (cmdChar.writeValueWithoutResponse ? cmdChar.writeValueWithoutResponse(d) : cmdChar.writeValue(d)); return true; }
+  catch (e) { console.warn("command failed", text, e); return false; }
+}
+function setConn(state, n = 0) {
+  connected = state === "on";
+  $("connPill").className = "pill " + ({ on: "on", connecting: "busy", retry: "busy", lost: "busy", bad: "bad" }[state] || "");
+  $("connText").textContent = { on: "Disc connected", connecting: "Connecting…", retry: `Looking for the disc (${n})…`,
+    lost: "Connection lost – reconnecting…", bad: "Bluetooth unavailable" }[state] || "Not connected";
+  $("connBtn").textContent = device ? "Disconnect" : "Connect";
+}
+async function pickDisc() {
+  if (!navigator.bluetooth) { setConn("bad"); showMsg("This browser can't use Bluetooth.<small>Open this page in Chrome or Edge on the computer.</small>"); return; }
+  try {
+    const d = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }, { name: "DiscTracker" }], optionalServices: [SVC] });
+    if (device && device !== d) { userStop = true; try { device.gatt.disconnect(); } catch {} }
+    device = d; hookDevice(d);
+  } catch (e) { if (e && e.name !== "NotFoundError") showMsg("Bluetooth: " + (e.message || e)); return; }
+  userStop = false; connectLoop();
+}
+function hookDevice(d) {
+  if (d._hooked) return; d._hooked = true;
+  d.addEventListener("gattserverdisconnected", () => { if (d !== device) return; cmdChar = null; setConn(userStop ? "off" : "lost"); if (!userStop) connectLoop(); });
+}
+// Chrome connects to a disc it remembers (after a browser or computer restart) only once it has heard it advertise
+// again, so listen for it first; a remembered disc that still won't connect is let go, and Connect asks afresh.
+async function heardDisc(d, ms) {
+  if (!d.watchAdvertisements) return;
+  const ac = window.AbortController ? new AbortController() : null;
+  try {
+    await new Promise(res => {
+      const t = setTimeout(res, ms);
+      d.addEventListener("advertisementreceived", () => { clearTimeout(t); res(); }, { once: true });
+      d.watchAdvertisements(ac ? { signal: ac.signal } : undefined).catch(() => { clearTimeout(t); res(); });
+    });
+  } finally { if (ac) ac.abort(); }
+}
+async function connectLoop() {
+  if (looping || !device) return;
+  looping = true; let n = 0;
+  while (device && !userStop && !device.gatt.connected) {
+    n++; setConn(n === 1 ? "connecting" : "retry", n);
+    if (device._remembered && n > 4) { forgetRemembered(); break; }
+    if (n === 1 || n % 3 === 0) await heardDisc(device, 6000);
+    try { await withTimeout(setupGatt(), 12000); if (device) device._remembered = false; }
+    catch (e) { console.warn("connect attempt failed", e); try { device.gatt.disconnect(); } catch {} await sleep(Math.min(1000 * n, 3000)); }
+  }
+  looping = false;
+}
+async function setupGatt() {
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SVC);
+  cmdChar = await svc.getCharacteristic(CMD);
+  let bt;
+  try { bt = await svc.getCharacteristic(BTSTREAM); }
+  catch { showMsg("This disc's firmware can't stream its readings.<small>Update the firmware.</small>"); throw new Error("no raw stream"); }
+  bt.addEventListener("characteristicvaluechanged", e => onPacket(e.target.value));
+  await bt.startNotifications();
+  await sendCmd("bton");                                      // every reading, 416 a second
+  setConn("on"); showMsg("");
+}
+async function disconnect() {
+  userStop = true;
+  if (cmdChar) await sendCmd("btoff");
+  if (device) { try { device.gatt.disconnect(); } catch {} }
+  device = null; setConn("off");
+}
+$("connBtn").onclick = () => device ? disconnect() : pickDisc();
+window.addEventListener("pagehide", () => { if (cmdChar) sendCmd("btoff"); });
+if (!EMBED && navigator.bluetooth && navigator.bluetooth.getDevices) {
+  navigator.bluetooth.getDevices().then(list => {
+    const d = list.find(x => (x.name || "").startsWith("Disc"));
+    if (d && !device) { device = d; d._remembered = true; hookDevice(d); userStop = false; connectLoop(); }
+  }).catch(() => {});
+}
+function forgetRemembered() {
+  try { device.gatt.disconnect(); } catch {}
+  device = null; setConn("off");
+  showMsg("Couldn't reconnect to the disc by itself.<small>Press Connect and choose DiscTracker.</small>");
+}
+function showMsg(html) { $("msg").innerHTML = html; }
+let hintTimer = 0;
+function showHint(html, ms = 6000) { $("hint").innerHTML = html; $("hint").hidden = false; clearTimeout(hintTimer); hintTimer = setTimeout(() => $("hint").hidden = true, ms); }
+$("hint").onclick = () => $("hint").hidden = true;
+
+// ================================================================ 3D
+// three.js is Y-up; the disc maths is Z-up (world Z = up). A holder group turns one into the other.
+const renderer = new THREE.WebGLRenderer({ canvas: $("view"), antialias: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.shadowMap.enabled = true;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x152030);
+scene.fog = new THREE.Fog(0x152030, 4, 12);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.03, 700);
+camera.position.set(0.0, 0.42, 0.62);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.02, 0); controls.enableDamping = true; controls.minDistance = 0.2; controls.maxDistance = 80;
+scene.add(new THREE.HemisphereLight(0xdfefff, 0x1c2430, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 2.4); sun.position.set(0.8, 2.0, 1.2); sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024); Object.assign(sun.shadow.camera, { left: -1, right: 1, top: 1, bottom: -1, near: 0.1, far: 6 });
+scene.add(sun); scene.add(sun.target);
+const floorY = FLOOR_Z;
+const floor = new THREE.Mesh(new THREE.CircleGeometry(9, 72), new THREE.MeshStandardMaterial({ color: 0x2a3a4c, roughness: 0.95 }));
+floor.rotation.x = -Math.PI / 2; floor.position.y = floorY; floor.receiveShadow = true; scene.add(floor);
+const grid = new THREE.GridHelper(18, 180, 0x5a7390, 0x3a4c60); grid.position.y = floorY + 0.001; scene.add(grid);
+
+const world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);    // Z-up frame
+// A field for throws in the open (Z-up, in `world`): grass out to 600 ft, a line and its distance every 50 ft, and the
+// landing spot. Shown only while such a throw replays (the fog then reaches far enough to see the flight).
+const fieldG = new THREE.Group(); fieldG.visible = false; world.add(fieldG);
+const textSprite = (txt, col, h) => {
+  const cv = document.createElement("canvas"), g = cv.getContext("2d"); g.font = "800 64px system-ui, Segoe UI, sans-serif";
+  cv.width = Math.ceil(g.measureText(txt).width) + 24; cv.height = 84;
+  g.font = "800 64px system-ui, Segoe UI, sans-serif"; g.textBaseline = "middle"; g.lineWidth = 10; g.strokeStyle = "rgba(0,0,0,0.55)";
+  g.strokeText(txt, 12, 44); g.fillStyle = col; g.fillText(txt, 12, 44);
+  const tx = new THREE.CanvasTexture(cv); tx.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tx, depthWrite: false })); sp.scale.set(h * cv.width / cv.height, h, 1); return sp;
+};
+{
+  const grass = new THREE.Mesh(new THREE.PlaneGeometry(160, 200), new THREE.MeshStandardMaterial({ color: 0x2f5a35, roughness: 1 }));
+  grass.position.set(0, 90, FLOOR_Z - 0.004); grass.receiveShadow = true; fieldG.add(grass);
+  for (let ft = 50; ft <= 600; ft += 50) {
+    const y = ft * 0.3048, line = new THREE.Mesh(new THREE.PlaneGeometry(ft % 100 ? 30 : 60, ft % 100 ? 0.08 : 0.16),
+      new THREE.MeshBasicMaterial({ color: 0xe8f0e0, transparent: true, opacity: ft % 100 ? 0.35 : 0.6 }));
+    line.position.set(0, y, FLOOR_Z - 0.002); fieldG.add(line);
+    if (ft % 100 === 0) { const t = textSprite(`${ft} ft`, "#f3f6fa", 1.3); t.position.set(-18, y, FLOOR_Z + 0.7); fieldG.add(t); }
+  }
+}
+const landRing = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.75, 48), new THREE.MeshBasicMaterial({ color: 0xff9a3c, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
+fieldG.add(landRing);
+let landTag = null;
+function setField(th) {
+  const on = !!(th && th.pred);
+  fieldG.visible = on; floor.visible = grid.visible = !on;
+  scene.fog.near = on ? 40 : 4; scene.fog.far = on ? 260 : 12;
+  scene.background.set(on ? 0x8fb6dc : 0x152030); scene.fog.color.set(on ? 0x8fb6dc : 0x152030);   // daylight over a field
+  if (landTag) { fieldG.remove(landTag); landTag.material.map.dispose(); landTag.material.dispose(); landTag = null; }
+  if (!on) return;
+  const L = th.pred.P[th.pred.P.length - 1].p;
+  landRing.position.set(L[0], L[1], FLOOR_Z + 0.01);
+  landTag = textSprite(`${th.pred.fl.distFt.toFixed(0)} ft`, "#ffb877", 1.6); landTag.position.set(L[0], L[1], FLOOR_Z + 1.6); fieldG.add(landTag);
+}
+const mover = new THREE.Group(); world.add(mover);                                       // position
+const tiltG = new THREE.Group(); mover.add(tiltG);                                       // orientation without the spin
+const spinG = new THREE.Group(); tiltG.add(spinG);                                       // the spin about the disc's axis
+
+// The disc: a lathed profile (radius 10.5 cm), flight plate on top, rim, open cavity underneath. Built along Y, turned
+// to Z. The label lies on the top surface (it follows the dome and the rim's shoulder) and can be turned, recoloured,
+// reworded or replaced with a photo of the real disc (the "Look" panel). Its top is +Y before it is turned.
+const LABEL_R = 0.1, PLATE = 0.084;
+const topZ = rho => rho <= 0.088 ? 0.012 - 0.006 * (rho / 0.088) ** 2
+  : (a => 0.006 - 0.012 * (1 - Math.cos(a)) / 2 - 0.006 * (a / Math.PI))(Math.asin(Math.min(1, (rho - 0.088) / 0.017)));
+const bodyMat = new THREE.MeshStandardMaterial({ color: look.color, roughness: 0.45, metalness: 0.05, side: THREE.DoubleSide });
+const labelCanvas = document.createElement("canvas"); labelCanvas.width = labelCanvas.height = 1024;
+const labelTex = new THREE.CanvasTexture(labelCanvas); labelTex.colorSpace = THREE.SRGBColorSpace; labelTex.anisotropy = 8;
+let labelMesh = null, blurMat = null;
+function buildDisc() {
+  const pts = [];
+  // outer top surface from the centre out (gently domed), round over the rim, then the underside of the rim and the cavity
+  for (let i = 0; i <= 12; i++) { const x = i / 12 * 0.088; pts.push(new THREE.Vector2(x, 0.012 - 0.006 * (x / 0.088) ** 2)); }
+  for (let i = 0; i <= 10; i++) { const a = i / 10 * Math.PI; pts.push(new THREE.Vector2(0.088 + 0.017 * Math.sin(a), 0.006 - 0.012 * (1 - Math.cos(a)) / 2 - 0.006 * (i / 10))); }
+  pts.push(new THREE.Vector2(0.092, -0.012), new THREE.Vector2(0.086, -0.004), new THREE.Vector2(0.08, 0.006));
+  for (let i = 0; i <= 8; i++) { const x = 0.08 - i / 8 * 0.08; pts.push(new THREE.Vector2(Math.max(0.0005, x), 0.006 + 0.002 * (1 - (x / 0.08) ** 2))); }
+  const geo = new THREE.LatheGeometry(pts, 96);
+  geo.rotateX(Math.PI / 2);                                    // Y-up profile -> normal along +Z
+  const body = new THREE.Mesh(geo, bodyMat);
+  body.castShadow = true;
+  const lg = new THREE.RingGeometry(0.0002, LABEL_R, 128, 40), lp = lg.attributes.position;
+  for (let i = 0; i < lp.count; i++) lp.setZ(i, topZ(Math.hypot(lp.getX(i), lp.getY(i))) + 0.0006);
+  lg.computeVertexNormals();
+  labelMesh = new THREE.Mesh(lg, new THREE.MeshStandardMaterial({ map: labelTex, roughness: 0.5, polygonOffset: true, polygonOffsetFactor: -1 }));
+  blurMat = new THREE.MeshBasicMaterial({ color: 0xffb070, transparent: true, opacity: 0, depthWrite: false });
+  const blur = new THREE.Mesh(new THREE.CircleGeometry(0.104, 96), blurMat);
+  blur.position.z = 0.0135;
+  const disc = new THREE.Group(); disc.add(body, labelMesh, blur);
+  return { disc, blur };
+}
+const photoImg = new Image();
+photoImg.onload = () => drawLabel();
+function drawLabel() {
+  const g = labelCanvas.getContext("2d"), S = labelCanvas.width, h = S / 2, P = h * PLATE / LABEL_R;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = look.color; g.fillRect(0, 0, S, S);
+  g.translate(h, h);
+  if (look.photo && photoImg.naturalWidth) {
+    const w = photoImg.naturalWidth, ht = photoImg.naturalHeight, k = S / Math.min(w, ht) * look.zoom;
+    g.save(); g.beginPath(); g.arc(0, 0, h, 0, TAU); g.clip();
+    g.drawImage(photoImg, -w * k / 2, -ht * k / 2, w * k, ht * k); g.restore();
+  } else {
+    // the flight plate: four shaded quarters (so the spin shows), the words, and a green dot at the label's top
+    for (let q = 0; q < 4; q++) {
+      g.fillStyle = q % 2 ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.10)";
+      g.beginPath(); g.moveTo(0, 0); g.arc(0, 0, P, (q - 0.5) * Math.PI / 2, (q + 0.5) * Math.PI / 2); g.fill();
+    }
+    g.strokeStyle = "rgba(0,0,0,0.25)"; g.lineWidth = 6; g.beginPath(); g.arc(0, 0, P, 0, TAU); g.stroke();
+    const words = (look.text || "").trim();
+    if (words) {
+      let fs = 150; const font = s => `800 ${s}px system-ui, "Segoe UI", sans-serif`;
+      g.font = font(fs); const wd = g.measureText(words).width; if (wd > 1.5 * P) { fs = Math.floor(fs * 1.5 * P / wd); g.font = font(fs); }
+      g.textAlign = "center"; g.textBaseline = "middle"; g.lineJoin = "round";
+      g.lineWidth = Math.max(6, fs * 0.12); g.strokeStyle = "rgba(0,0,0,0.55)"; g.strokeText(words, 0, -P * 0.2);
+      g.fillStyle = "#ffffff"; g.fillText(words, 0, -P * 0.2);
+    }
+    g.fillStyle = "#34d399"; g.beginPath(); g.arc(0, -P * 0.8, 34, 0, TAU); g.fill();
+  }
+  labelTex.needsUpdate = true;
+  bodyMat.color.set(look.color);
+  if (blurMat) blurMat.color.set(look.color).lerp(new THREE.Color(0xffffff), 0.35);
+  labelMesh.rotation.z = look.turn * D2R;
+}
+const { disc, blur } = buildDisc(); spinG.add(disc);
+if (look.photo) photoImg.src = look.photo; else drawLabel();
+const axes = new THREE.AxesHelper(0.16); axes.visible = false; spinG.add(axes);
+// shadow-ish ring under the disc to show height
+const ring2 = new THREE.Mesh(new THREE.RingGeometry(0.1, 0.107, 64), new THREE.MeshBasicMaterial({ color: 0x5f7a96, transparent: true, opacity: 0.6 }));
+ring2.rotation.x = -Math.PI / 2; ring2.position.y = floorY + 0.002; scene.add(ring2);
+// trail of where the disc has been (last ~2 s)
+const trailPts = [];
+const trailGeo = new LineGeometry(); trailGeo.setPositions([0, 0, 0, 0, 0, 0]);
+const trailMat = new LineMaterial({ color: 0xfff1b8, linewidth: 3, transparent: true, opacity: 0.85 });
+const trail = new Line2(trailGeo, trailMat); scene.add(trail);
+// the replay's own pieces (Z-up, in `world`): the rebuilt path, the ghost of the readings as they came, the release
+// with its velocity, and the net
+const rpG = new THREE.Group(); rpG.visible = false; world.add(rpG);
+const pathMat = new LineMaterial({ color: 0xff9a3c, linewidth: 4 }), ghostMat = new LineMaterial({ color: 0x9aa7b6, linewidth: 2, transparent: true, opacity: 0.7, dashed: true, dashSize: 0.06, gapSize: 0.04 });
+const pathLine = new Line2(new LineGeometry(), pathMat), ghostLine = new Line2(new LineGeometry(), ghostMat);
+const relDot = new THREE.Mesh(new THREE.SphereGeometry(0.022, 20, 14), new THREE.MeshBasicMaterial({ color: 0xff9a3c }));
+const oldDot = new THREE.Mesh(new THREE.SphereGeometry(0.016, 16, 12), new THREE.MeshBasicMaterial({ color: 0x9aa7b6 }));
+// a solid arrow (WebGL lines are one pixel wide): a shaft and a cone along +Y, stretched to its length
+function makeArrow(color, r) {
+  const g = new THREE.Group(), mat = new THREE.MeshBasicMaterial({ color });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 1, 12), mat), head = new THREE.Mesh(new THREE.ConeGeometry(r * 2.8, 1, 18), mat);
+  g.add(shaft, head); g.userData = { shaft, head };
+  return g;
+}
+function setArrow(a, from, dir, len) {
+  const hl = Math.min(0.14, len * 0.3), { shaft, head } = a.userData;
+  shaft.scale.set(1, len - hl, 1); shaft.position.set(0, (len - hl) / 2, 0);
+  head.scale.set(1, hl, 1); head.position.set(0, len - hl / 2, 0);
+  a.position.copy(from); a.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+}
+const arrowNew = makeArrow(0xffd166, 0.011), arrowOld = makeArrow(0x9aa7b6, 0.008);
+const net = new THREE.Group();
+net.add(new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.6), new THREE.MeshBasicMaterial({ color: 0x8fb3d9, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })));
+net.add(new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.6, 16, 16), new THREE.MeshBasicMaterial({ color: 0xb7cde4, wireframe: true, transparent: true, opacity: 0.35 })));
+net.rotation.x = Math.PI / 2;                                  // upright, facing the throw (+Y)
+rpG.add(pathLine, ghostLine, relDot, oldDot, arrowNew, arrowOld, net);
+const lineMats = [trailMat, pathMat, ghostMat];
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h;
+  for (const m of lineMats) m.resolution.set(w, h);
+  frameView();
+}
+// On a phone the replay panel covers the lower half: shift the picture so the disc the camera follows sits in the
+// space between the header and the panel.
+function frameView() {
+  const w = innerWidth, h = innerHeight;
+  if (document.body.classList.contains("replay") && w <= 760) {
+    const top = document.querySelector("header").getBoundingClientRect().bottom, bottom = $("replayPanel").getBoundingClientRect().top;
+    camera.setViewOffset(w, h, 0, Math.max(0, h / 2 - (top + bottom) / 2), w, h);
+  } else camera.clearViewOffset();
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+
+// The picture: tilt = the measured attitude with its twist about the disc axis taken out; the twist is drawn
+// separately so a fast spin can be slowed down for the eye.
+let headingOffset = new THREE.Quaternion(), visSpin = 0, lastT = performance.now(), uiT = 0, tlT = 0;
+function swingTwist(q) {                                       // q = swing * twist(about Z)
+  const twist = new THREE.Quaternion(0, 0, q.z, q.w).normalize();
+  const swing = q.clone().multiply(twist.clone().invert());
+  return { swing, twistAngle: 2 * Math.atan2(q.z, q.w) };
+}
+// "Face me": the disc is held in front of the viewer with its label reading normally, so the label's top points
+// away from them and its face toward them. Turn the picture so the same is true on screen (away = into the screen, +Y).
+function faceMe() {
+  const lt = look.turn * D2R;
+  const up = new THREE.Vector3(-Math.sin(lt), Math.cos(lt), 0).applyQuaternion(st.q), nrm = Z.clone().applyQuaternion(st.q);
+  const dx = up.x - nrm.x, dy = up.y - nrm.y;
+  if (Math.hypot(dx, dy) < 0.15) return false;
+  headingOffset.setFromAxisAngle(Z, Math.PI / 2 - Math.atan2(dy, dx));
+  st.faced = true;
+  return true;
+}
+function faceNow() {
+  if (!st.n) { showHint("Connect the disc first."); return; }
+  if (rp.on) exitReplay();
+  if (!faceMe()) showHint("Hold the disc flatter (or upright facing you) and press Face me again.");
+}
+$("faceBtn").onclick = faceNow; $("faceBtn2").onclick = faceNow;
+$("levelBtn").onclick = () => {
+  const a = new THREE.Vector3(...st.a).normalize();
+  const yawKeep = swingTwist(st.q).twistAngle;
+  st.q.setFromUnitVectors(a, Z);
+  st.q.premultiply(new THREE.Quaternion().setFromAxisAngle(Z, yawKeep)).normalize();
+};
+$("optAxes").onchange = () => axes.visible = $("optAxes").checked;
+
+// ================================================================ the "Look" panel
+function lookUi() {
+  $("lkTurn").value = look.turn; $("lkTurnV").textContent = `${look.turn}°`;
+  $("lkColor").value = look.color; $("lkText").value = look.text;
+  $("lkPhotoX").hidden = $("lkZoomRow").hidden = $("lkPhotoHint").hidden = !look.photo; $("lkZoom").value = look.zoom;
+}
+function setLook(p) { Object.assign(look, p); drawLabel(); lookUi(); if (!saveLook()) showHint("This browser wouldn't keep the photo (too big?) - it shows until the page is closed."); }
+const turnBy = d => setLook({ turn: ((look.turn + d + 540) % 360) - 180 });
+$("lookBtn").onclick = () => { $("lookPanel").hidden = !$("lookPanel").hidden; $("lookBtn").classList.toggle("on", !$("lookPanel").hidden); lookUi(); };
+$("lookClose").onclick = () => { $("lookPanel").hidden = true; $("lookBtn").classList.remove("on"); };
+$("lkTurn").oninput = () => setLook({ turn: +$("lkTurn").value });
+$("lkTurnM5").onclick = () => turnBy(-5); $("lkTurnM1").onclick = () => turnBy(-1);
+$("lkTurnP1").onclick = () => turnBy(1); $("lkTurnP5").onclick = () => turnBy(5); $("lkTurn0").onclick = () => setLook({ turn: 0 });
+$("lkColor").oninput = () => setLook({ color: $("lkColor").value });
+$("lkText").oninput = () => setLook({ text: $("lkText").value });
+$("lkZoom").oninput = () => setLook({ zoom: +$("lkZoom").value });
+$("lkPhotoBtn").onclick = () => $("lkPhoto").click();
+$("lkPhotoX").onclick = () => { photoImg.removeAttribute("src"); setLook({ photo: null, zoom: 1 }); };
+$("lkPhoto").onchange = () => {
+  const f = $("lkPhoto").files[0]; if (!f) return;
+  const img = new Image(), url = URL.createObjectURL(f);
+  img.onload = () => {                                         // square middle of the photo, at most 768 px, as JPEG
+    const s = Math.min(img.naturalWidth, img.naturalHeight), d = Math.min(768, s), cv = document.createElement("canvas");
+    cv.width = cv.height = d;
+    cv.getContext("2d").drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, d, d);
+    URL.revokeObjectURL(url);
+    const data = cv.toDataURL("image/jpeg", 0.86);
+    look.photo = data; look.zoom = 1; photoImg.src = data; setLook({});
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); showHint("That file didn't open as a picture."); };
+  img.src = url; $("lkPhoto").value = "";
+};
+$("lkReset").onclick = () => { photoImg.removeAttribute("src"); setLook(Object.assign({}, LOOK0)); };
+
+// ================================================================ the throw replay
+const rp = { on: false, th: null, t: 0, speed: 0.1, playing: true, hold: 0, drag: false, visSpin: 0, camLive: null };
+const tA = th => (th.kA - th.iRel) / th.rate, tB = th => th.pred ? th.pred.fl.timeS : (th.kB - th.iRel) / th.rate;
+function setLine(line, arr) { const g = new LineGeometry(); g.setPositions(arr.length >= 6 ? arr : [0, 0, 0, 0, 0, 0.0001]); line.geometry.dispose(); line.geometry = g; line.computeLineDistances(); }
+function enterReplay(th) {
+  if (!rp.on) rp.camLive = camera.position.clone().sub(controls.target);
+  rp.on = true; rp.th = th; rp.t = tA(th); rp.playing = true; rp.hold = 0;
+  setLine(pathLine, th.pred ? Array.from(th.pos.subarray(0, (th.relJ + 1) * 3)).concat(...th.pred.P.map(q => q.p)) : Array.from(th.pos));
+  setLine(ghostLine, th.pred ? th.ghost.slice(0, Math.max(6, (th.relJ + 1) * 3)) : th.ghost);
+  setField(th);
+  const R = th.relJ * 3, relP = new THREE.Vector3(th.pos[R], th.pos[R + 1], th.pos[R + 2]);
+  relDot.position.copy(relP);
+  // velocity arrows: 1 m per 25 m/s (56 mph)
+  const vN = new THREE.Vector3(...th.vRel), vO = new THREE.Vector3(...th.vOld);
+  setArrow(arrowNew, relP, vN, Math.max(0.15, vN.length() / 25));
+  oldDot.position.set(...th.oldRelPos);
+  setArrow(arrowOld, oldDot.position, vO, Math.max(0.12, vO.length() / 25));
+  const j = th.netJ, E = j * 3, ahead = th.netBeyond ? th.spd[j] / MPH * 7 / th.rate : 0.03;   // a cut-short recording: ~6 readings on
+  net.visible = th.impact; net.position.set(th.pos[E], th.pos[E + 1] + ahead, Math.max(th.pos[E + 2], FLOOR_Z + 0.8));
+  rpG.visible = true; trail.visible = false; trailPts.length = 0; showMsg("");
+  document.body.classList.add("replay");
+  $("panel").hidden = true; $("replayPanel").hidden = false; $("timeline").hidden = false; $("lastBtn").hidden = true;
+  // camera: behind the thrower and a little to the right, high enough to see the whole flight to the net
+  const relT = new THREE.Vector3(relP.x, relP.z, -relP.y);
+  controls.target.copy(relT); camera.position.copy(relT).add(new THREE.Vector3(1.7, 1.5, 3.4));
+  renderReplayPanel(); setSpeedUi(); frameView();
+}
+function exitReplay() {
+  if (!rp.on) return;
+  setField(null);
+  const hard = rp.th && rp.th.gyrMs > 0;
+  rp.on = false; rpG.visible = false;
+  document.body.classList.remove("replay");
+  $("panel").hidden = false; $("replayPanel").hidden = true; $("timeline").hidden = true; $("lastBtn").hidden = !throwsList.length;
+  const goal = new THREE.Vector3();
+  controls.target.copy(goal); camera.position.copy(goal).add(rp.camLive || new THREE.Vector3(0, 0.42, 0.62));
+  frameView();
+  if (hard) showHint("The throw spun the gyro past its limit, so the picture's direction is lost: hold the disc with its label reading normally and press <b>Face me</b>.", 9000);
+}
+function setSpeedUi() {
+  for (const b of $("rpSpeed").querySelectorAll("button")) b.classList.toggle("on", +b.dataset.s === rp.speed);
+  $("rpPlay").textContent = rp.playing ? "Pause" : "Play";
+}
+$("rpSpeed").onclick = e => { const b = e.target.closest("button"); if (!b) return; rp.speed = +b.dataset.s; setSpeedUi(); };
+$("rpPlay").onclick = () => { rp.playing = !rp.playing; if (rp.playing && rp.t >= tB(rp.th) - 1e-6) rp.t = tA(rp.th); rp.hold = 0; setSpeedUi(); };
+$("rpExit").onclick = exitReplay;
+$("lastBtn").onclick = () => { if (throwsList.length) enterReplay(throwsList[throwsList.length - 1]); };
+$("rpSel").onchange = () => { const th = throwsList[+$("rpSel").value]; if (th) enterReplay(th); };
+addEventListener("keydown", e => {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.target.closest("input, select, textarea")) return;
+  if (e.key === "Escape") { if (!$("lookPanel").hidden) $("lookClose").click(); else exitReplay(); }
+  else if (e.key === " " && rp.on) { e.preventDefault(); $("rpPlay").click(); }
+  else if (e.key === "f" || e.key === "F") faceNow();
+});
+function renderReplayPanel() {
+  const th = rp.th, s = th.nw.six, r = th.c.res, f1 = x => x.toFixed(1), sg = x => (x > 0 ? "+" : "") + x.toFixed(1);
+  const row = (k, a, b, u) => `<tr><td>${k}</td><td class="new">${a}</td><td class="old">${b}</td><td class="old">${u}</td></tr>`;
+  const atLeast = th.nw.info.spin && th.nw.info.spin.atLeast;
+  $("rpTable").innerHTML = (th.pred ? `<div class="flightBig">${th.pred.fl.distFt.toFixed(0)} ft <span>${Math.abs(th.pred.fl.lateralFt).toFixed(0)} ft ${th.pred.fl.lateralFt >= 0 ? "left" : "right"} · ` +
+      `${th.pred.fl.timeS.toFixed(1)} s${th.pred.landT != null ? ` (measured ${th.pred.landT.toFixed(1)} s)` : ""}</span></div>` : "") +
+    `<table class="cmp"><tr><th></th><th>rebuilt</th><th>disc's own</th><th></th></tr>` +
+    row("Speed", f1(s.speed), f1(r[0]), "mph") + row("Spin", (atLeast ? "≥ " : "") + s.spin.toFixed(0), r[1].toFixed(0), "rpm") +
+    row("Hyzer", sg(s.hyzer), sg(r[2]), "°") + row("Nose", sg(s.nose), sg(r[3]), "°") + row("Launch", sg(s.launch), sg(r[4]), "°") + `</table>`;
+  $("rpMore").innerHTML = `<div class="legend"><span><i style="background:#ff9a3c"></i>rebuilt</span><span><i style="background:#9aa7b6"></i>as the sensor read it</span>` +
+    `<span><i style="background:#60a5fa"></i>gyro</span><span><i style="background:rgba(248,113,113,0.5)"></i>sensor maxed out</span><span><i style="background:#ffd166"></i>release speed</span></div>` +
+    `<details id="rpNotes"${rp.notesOpen ?? !matchMedia("(max-width: 760px)").matches ? " open" : ""}><summary>How it was rebuilt</summary><ul class="notes">` +
+    (th.accMs > 0 ? `<li>The force passed the sensor's 16 g for ${th.accMs.toFixed(0)} ms of the pull; rebuilt from the readings it did get, it peaked near ${th.peak.toFixed(0)} g.</li>` : `<li>The force stayed within the sensor's 16 g: nothing had to be rebuilt.</li>`) +
+    (th.gyrMs > 0 ? `<li>The spin passed the gyro's 382 rpm ${th.gyrMs.toFixed(0)} ms before release; the spin-up in between is ${th.nw.info.ramp === "fitted" ? "the shape that fits the force readings best" : "a smooth curve to the flight's spin"}.</li>` : "") +
+    spinNote(th) + speedNote(th) +
+    (th.nw.info.relSrc !== "settled" ? `<li>Where the hand let go wasn't clear (the readings never settled into free flight): this uses the disc's own release mark.</li>`
+      : Math.abs(th.relShift) >= 3 ? `<li>Released ${(Math.abs(th.relShift) / th.rate * 1000).toFixed(0)} ms ${th.relShift > 0 ? "later" : "earlier"} than the disc marked${th.relShift < 0 && th.nw.info.relGiven >= th.kB - 2 ? " (it marked the net)" : ""}: here the readings settled into free flight once the disc was spun up.</li>` : "") +
+    (th.missing ? `<li>${th.missing} readings were lost over Bluetooth and bridged.</li>` : "") +
+    (th.pred ? `<li>Thrown in the open: the flight after the first half second is predicted from these release numbers with the simulator's ` +
+      `${th.pred.disc.name} (${th.pred.disc.speed}/${th.pred.disc.glide}/${th.pred.disc.turn}/${th.pred.disc.fade}) - the sensor can't measure where the disc is over seconds of flight. ` +
+      `${th.pred.landT != null ? `Measured time in the air: <b>${th.pred.landT.toFixed(1)} s</b> (predicted ${th.pred.fl.timeS.toFixed(1)} s).` : "The time it really spent in the air shows here once it lands."}</li>` : "") +
+    `<li>Orange: the rebuilt flight. Grey dashed: the same readings added up as they came, cut off at 16 g.</li></ul></details>`;
+  $("rpNotes").ontoggle = () => { rp.notesOpen = $("rpNotes").open; frameView(); };
+  $("rpSel").innerHTML = throwsList.map((t, i) => `<option value="${i}">${t.at.toLocaleTimeString()} · ${t.nw.six.speed.toFixed(0)} mph</option>`).reverse().join("");
+  $("rpSel").value = String(throwsList.indexOf(th));
+}
+// Where the speed came from: the pull's force (always, when the sensor saw enough of it), or the air's drag in flight
+// when both face axes were maxed for long (track.js airPush, the ratio learned per disc from fully seen pulls)
+function speedNote(th) {
+  const i = th.nw.info, a = i.air, ms = x => (x / th.rate * 1000).toFixed(0), mph = v => (v * 2.2369363).toFixed(1);
+  const name = th.disc ? `the ${th.disc}` : "this disc";
+  if (i.speedSrc === "drag")
+    return `<li><b>Speed from the air's drag</b>: both face axes were maxed for ${ms(i.bothStuck)} ms of the pull, so nothing measured the push's peak. ` +
+      `In the first half second of flight the sensor read the drag in full (${(a.D0 / 9.80665).toFixed(2)} g), which gives ${mph(a.vDrag)} mph with ${name}'s ` +
+      `drag learned from ${th.nKA} throws. The pull's own rebuild said ${mph(i.speedPull)} mph.</li>`;
+  if ((i.bothStuck || 0) >= 6) {
+    const why = !a ? "the flight was too short to read the drag (it needs about 1.5 turns before the net)"
+      : !a.good ? "the drag reading wasn't clean (at this spin the off-centre sensor maxes out in flight too)"
+      : `${name}'s drag is still being learned (${th.nKA || 0} of ${th.needKA} gentler throws so far)`;
+    return `<li><b>Speed from the pull, less certain</b>: both face axes were maxed for ${ms(i.bothStuck)} ms, and ${why}. On pulls this hard the pull's rebuild tends to read low.</li>`;
+  }
+  return "";
+}
+// How the flight's spin was found when the gyro was maxed (track.js: the wobble's turning rate, the off-centre force)
+function spinNote(th) {
+  const i = th.nw.info, sp = i.spin, src = i.spinSrc, f0 = x => x.toFixed(0);
+  if (src === "gyro") return "";
+  const kI = `its turning rate ÷ ${th.kI.toFixed(2)}, ${th.kIN ? `learned from ${th.kIN} slower throws` : "a golf disc's usual until slower throws teach it"}`;
+  const mm = th.radius > 0 ? `${(th.radius * 1000).toFixed(1)} mm off the axis, ${th.rSrc}` : "";
+  const txt = src === "wobble+force" ? `Spin past the gyro's top, measured two ways that agree: the wobble, ${f0(sp.wobble)} rpm (${kI}); the off-centre force, ${f0(sp.force)} rpm (sensor ${mm}).`
+    : src.startsWith("wobble (") ? `Spin past the gyro's top, from the wobble: ${f0(sp.wobble)} rpm (${kI}). The off-centre force says ${f0(sp.force)} rpm - the sensor's radius (${mm}) may be off.`
+    : src === "wobble" ? `Spin past the gyro's top, from the wobble: ${f0(sp.wobble)} rpm (${kI}).`
+    : src === "force" ? `Spin past the gyro's top, from the off-centre force: ${f0(sp.force)} rpm (sensor ${mm}). Too little wobble to cross-check.`
+    : src === "disc" ? "Spin past the gyro's top: the disc's own number (too little wobble or flight here to measure it)."
+    : "Spin: at least 382 rpm, the gyro's top - too little wobble or flight to measure past it. A calibrated spin radius (calibration page) gives it from the off-centre force.";
+  return `<li>${txt}</li>`;
+}
+// the timeline: force and spin over the throw - what the sensor read (grey/blue), where it was maxed (red), and the
+// rebuilt values (orange); drag it to move through the throw
+function drawTimeline() {
+  const th = rp.th, cv = $("tl"), dpr = Math.min(2, devicePixelRatio || 1), W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const L = 46, R = W - 12, x = j => L + j / (th.N - 1) * (R - L), N = th.N, narrow = W < 560;
+  const lanes = [{ y0: 22, y1: H / 2 - 5 }, { y0: H / 2 + 9, y1: H - 22 }];
+  g.font = "11.5px system-ui, Segoe UI, sans-serif"; g.textBaseline = "middle";
+  // a label on a dark backing, so lines under it don't make it hard to read; returns its left and right edge
+  const tag = (txt, X, Y, align, col) => {
+    const w = g.measureText(txt).width, x0 = align === "right" ? X - w : align === "center" ? X - w / 2 : X;
+    g.fillStyle = "rgba(11,15,21,0.82)"; g.fillRect(x0 - 4, Y - 8, w + 8, 16);
+    g.fillStyle = col; g.textAlign = "left"; g.fillText(txt, x0, Y); return [x0 - 4, x0 + w + 4];
+  };
+  const fMax = Math.max(20, th.peak * 1.12), sMax = Math.max(450, Math.abs(th.nw.six.spin) * 1.15);
+  const lane = (ln, max, limit, limitTxt) => {
+    const y = v => ln.y1 - Math.min(1.04, v / max) * (ln.y1 - ln.y0);
+    g.strokeStyle = "rgba(255,255,255,0.1)"; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(L, ln.y1 + 0.5); g.lineTo(R, ln.y1 + 0.5); g.stroke();
+    g.fillStyle = "#a7b2c0"; g.textAlign = "right"; g.fillText(`${Math.round(max)}`, L - 6, ln.y0 + 2); g.fillText("0", L - 6, ln.y1);
+    g.setLineDash([4, 4]); g.strokeStyle = "rgba(248,113,113,0.75)"; g.beginPath(); g.moveTo(L, y(limit)); g.lineTo(R, y(limit)); g.stroke(); g.setLineDash([]);
+    ln.limit = [limitTxt, y(limit)];
+    return y;
+  };
+  const laneLabels = (ln, title) => {                            // drawn last, over the curves
+    tag(title, L + 6, ln.y0 + 8, "left", "#e5ebf2");
+    const [txt, yl] = ln.limit; tag(txt, R - 4, yl - 9 < ln.y0 + 8 ? yl + 9 : yl - 9, "right", "#fca5a5");
+  };
+  const series = (y, arr, col, w, from = 0, to = N - 1, dash) => {
+    g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash || []); g.beginPath();
+    for (let j = from; j <= to; j++) { const X = x(j), Y = y(Math.abs(arr[j])); j === from ? g.moveTo(X, Y) : g.lineTo(X, Y); }
+    g.stroke(); g.setLineDash([]);
+  };
+  // maxed stretches (red bands)
+  const bands = (flags, ln) => { g.fillStyle = "rgba(248,113,113,0.18)"; for (let j = 0; j < N; j++) if (flags[j]) g.fillRect(x(j) - 0.5, ln.y0, Math.max(1.5, (R - L) / N + 0.5), ln.y1 - ln.y0); };
+  bands(th.clipA, lanes[0]); bands(th.clipG, lanes[1]);
+  const yF = lane(lanes[0], fMax, 16, narrow ? "16 g limit" : "16 g: the sensor's limit (each axis)");
+  series(yF, th.fMeas, "#9aa7b6", 1.5); series(yF, th.fNew, "#ff9a3c", 2.2);
+  const yS = lane(lanes[1], sMax, 2294 / 6, narrow ? "382 rpm limit" : "382 rpm: the gyro's limit");
+  const spinAbs = th.spin.map(Math.abs);
+  series(yS, th.gMeas, "#60a5fa", 1.5); series(yS, spinAbs, "#ff9a3c", 2.2);
+  // release marks (the disc's own, if it differs) and the time axis (ms from release)
+  const line = (j, col, dash) => { g.strokeStyle = col; g.setLineDash(dash || []); g.lineWidth = 1.5; g.beginPath(); g.moveTo(x(j), 16); g.lineTo(x(j), H - 18); g.stroke(); g.setLineDash([]); };
+  const showDisc = Math.abs(th.discRelJ - th.relJ) >= 3 && th.discRelJ >= 0 && th.discRelJ < N;
+  if (showDisc) line(th.discRelJ, "#9aa7b6", [3, 3]);
+  line(th.relJ, "#ff9a3c");
+  laneLabels(lanes[0], "Force on the sensor (g)"); laneLabels(lanes[1], "Spin (rpm)");
+  const relW = g.measureText("release").width / 2 + 4, relX = clamp(x(th.relJ), L + relW, R - relW), span = tag("release", relX, 8, "center", "#ffb877");
+  if (showDisc) {                                                // beside the release label, on whichever side its line is
+    const txt = narrow ? "disc's" : "disc's release", w = g.measureText(txt).width + 8, dx = x(th.discRelJ);
+    const right = dx > relX ? Math.max(dx - w / 2, span[1] + 4) : Math.min(dx - w / 2, span[0] - 4 - w);
+    tag(txt, clamp(right + 4, L, R - w + 4), 8, "left", "#cbd5e1");
+  }
+  g.fillStyle = "#a7b2c0"; g.textAlign = "center";
+  const t0 = (0 - th.relJ) / th.rate * 1000, t1 = (N - 1 - th.relJ) / th.rate * 1000, step = narrow ? 200 : 100;
+  for (let ms = Math.ceil(t0 / step) * step; ms <= t1; ms += step) { const j = th.relJ + ms / 1000 * th.rate; g.fillText(`${ms > 0 ? "+" : ""}${ms} ms`, x(j), H - 9); }
+  // the playhead
+  const jp = clamp(rp.t * th.rate + th.iRel - th.kA, 0, N - 1);
+  g.strokeStyle = "#ffffff"; g.lineWidth = 2; g.beginPath(); g.moveTo(x(jp), 16); g.lineTo(x(jp), H - 18); g.stroke();
+}
+function scrub(e) {
+  const r = $("tl").getBoundingClientRect(), th = rp.th, L = 46, R = r.width - 12;
+  const j = clamp((e.clientX - r.left - L) / (R - L), 0, 1) * (th.N - 1);
+  rp.t = (j + th.kA - th.iRel) / th.rate; rp.hold = 0;
+}
+$("tl").addEventListener("pointerdown", e => { if (!rp.on) return; rp.drag = true; rp.playing = false; setSpeedUi(); $("tl").setPointerCapture(e.pointerId); scrub(e); });
+$("tl").addEventListener("pointermove", e => { if (rp.drag) scrub(e); });
+for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) $("tl").addEventListener(ev, () => { rp.drag = false; });
+
+// the disc at time rp.t of the replay
+function replayFrame(dtF) {
+  const th = rp.th, a = tA(th), b = tB(th);
+  let dT = 0;
+  const flying = th.pred && rp.t > 0;
+  if (rp.playing && !rp.drag) {
+    if (rp.hold > 0) { rp.hold -= dtF; if (rp.hold <= 0) { rp.t = a; rp.visSpin = null; } }
+    else { dT = dtF * (flying ? Math.max(1, rp.speed) : rp.speed); rp.t += dT; if (rp.t >= b) { rp.t = b; rp.hold = 1.4; } }
+  }
+  if (th.pred && rp.t > 0) return predFrame(th, dtF);
+  const x = clamp(rp.t * th.rate + th.iRel - th.kA, 0, th.N - 1), j0 = Math.min(th.N - 2, Math.floor(x)), f = x - j0;
+  const P = i => new THREE.Vector3(th.pos[i * 3], th.pos[i * 3 + 1], th.pos[i * 3 + 2]);
+  const pos = P(j0).lerp(P(j0 + 1), f), q = th.att[j0].clone().slerp(th.att[j0 + 1], f);
+  const { swing, twistAngle } = swingTwist(q);
+  const rpm = Math.abs(th.spin[j0]), shown = rpm * rp.speed, slow = $("optSlow").checked && shown > 150 && rp.playing && !rp.drag;
+  if (slow && rp.visSpin != null) rp.visSpin += Math.sign(th.spin[j0]) * Math.min(rpm * TAU / 60 * rp.speed, 2.2 * TAU) * dtF;
+  else rp.visSpin = twistAngle;
+  tiltG.quaternion.copy(swing); spinG.quaternion.setFromAxisAngle(Z, rp.visSpin);
+  blur.material.opacity = Math.min(0.55, Math.max(0, (shown - 120) / 600));
+  mover.position.copy(pos);
+  return { pos, rpm, j: Math.round(x), slow };
+}
+// the predicted flight at time rp.t after release
+function predFrame(th, dtF) {
+  const P = th.pred.P, i = clamp(Math.floor(rp.t / 0.02), 0, P.length - 2), a = P[i], b = P[i + 1];
+  const f = clamp((rp.t - a.t) / Math.max(1e-6, b.t - a.t), 0, 1), L = (u, v) => u + (v - u) * f;
+  const pos = new THREE.Vector3(L(a.p[0], b.p[0]), L(a.p[1], b.p[1]), L(a.p[2], b.p[2]));
+  const n = new THREE.Vector3(L(a.n[0], b.n[0]), L(a.n[1], b.n[1]), L(a.n[2], b.n[2])).normalize();
+  const rpm = Math.abs(th.pred.spin0) * Math.exp(-rp.t / 12), w = Math.sign(th.pred.spin0) * rpm * TAU / 60;
+  if (rp.visSpin == null) rp.visSpin = 0;
+  const shown = rpm * Math.max(1, rp.speed);
+  rp.visSpin += Math.sign(w) * Math.min(Math.abs(w), 2.2 * TAU) * dtF;
+  tiltG.quaternion.setFromUnitVectors(Z, n); spinG.quaternion.setFromAxisAngle(Z, rp.visSpin);
+  blur.material.opacity = Math.min(0.55, Math.max(0, (shown - 120) / 600));
+  mover.position.copy(pos);
+  return { pos, rpm, j: rp.th.N - 1, slow: shown > 150, flight: true };
+}
+function liveFrame(dtF) {
+  const q = headingOffset.clone().multiply(st.q);
+  const { swing, twistAngle } = swingTwist(q);
+  const rpm = Math.abs(st.wz) * 60 / TAU, slow = $("optSlow").checked && rpm > 150;
+  if (slow) visSpin += Math.sign(st.wz) * Math.min(Math.abs(st.wz), 2.2 * TAU) * dtF;    // at most 2.2 turns a second on screen
+  else visSpin = twistAngle;
+  tiltG.quaternion.copy(swing);
+  spinG.quaternion.setFromAxisAngle(Z, visSpin);
+  blur.material.opacity = Math.min(0.55, Math.max(0, (rpm - 120) / 600));
+  const move = $("optMove").checked;
+  const pos = move ? new THREE.Vector3(st.p.x, st.p.y, st.p.z).applyQuaternion(headingOffset) : new THREE.Vector3();
+  mover.position.copy(pos);
+  return { pos, rpm, slow, move };
+}
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dtF = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  const r = rp.on ? replayFrame(dtF) : liveFrame(dtF);
+  const wp = new THREE.Vector3(r.pos.x, r.pos.z, -r.pos.y);         // world (Z-up) -> three (Y-up)
+  ring2.position.set(wp.x, floorY + 0.002, wp.z);
+  ring2.material.opacity = 0.6 / (1 + Math.max(0, wp.y - floorY) * 2);
+  if (!rp.on && $("optTrail").checked && r.move) {
+    trailPts.push(wp.x, wp.y, wp.z); if (trailPts.length > 3 * 120) trailPts.splice(0, 3);
+    if (trailPts.length >= 6) { trail.geometry.dispose(); const tg = new LineGeometry(); tg.setPositions(trailPts); trail.geometry = tg; trail.computeLineDistances(); }
+    trail.visible = true;
+  } else if (!rp.on) { trail.visible = false; trailPts.length = 0; }
+  sun.position.set(wp.x + 0.8, 2.0 + Math.max(0, wp.y), wp.z + 1.2); sun.target.position.copy(wp);
+  const goal = new THREE.Vector3(wp.x, Math.max(floorY + 0.1, wp.y) + 0.02, wp.z), dT = goal.sub(controls.target).multiplyScalar(1 - Math.exp(-dtF / (r.flight ? 0.25 : rp.on ? 0.6 : 0.3)));
+  controls.target.add(dT); camera.position.add(dT);                                       // the camera follows the disc
+  controls.update();
+  renderer.render(scene, camera);
+  if (rp.on && now - tlT > 33) { tlT = now; drawTimeline(); }
+  if (now - uiT > 120) { uiT = now; rp.on ? replayUi(r) : updateUi(r.rpm, r.slow); }
+}
+const fitted = (th, j) => { const w = th.nw.info.fitWindow, k = j + th.kA; return !!w && k >= w[0] && k < w[1]; };
+function replayUi(r) {
+  const th = rp.th, j = clamp(r.j, 0, th.N - 1), ms = (j - th.relJ) / th.rate * 1000;
+  if (r.flight) {
+    const fl = th.pred.fl, out = Math.hypot(r.pos.x, r.pos.y) / 0.3048, landed = rp.t >= fl.timeS - 1e-6;
+    $("rpmN").textContent = r.rpm.toFixed(0); $("rpmS").textContent = "predicted flight" + (r.slow ? " · spin shown slowed" : "");
+    $("rpNow").innerHTML = landed ? `<b>landed: ${fl.distFt.toFixed(0)} ft</b> · ${Math.abs(fl.lateralFt).toFixed(0)} ft ${fl.lateralFt >= 0 ? "left" : "right"} · ${fl.timeS.toFixed(1)} s in the air`
+      : `${rp.t.toFixed(1)} s in the air · <b>${out.toFixed(0)} ft</b> out · ${((r.pos.z - FLOOR_Z) / 0.3048).toFixed(0)} ft up`;
+    return;
+  }
+  const atLeast = th.nw.info.spin && th.nw.info.spin.atLeast && j >= th.relJ;
+  $("rpmN").textContent = r.rpm < 1 ? "0" : (atLeast ? "≥" : "") + r.rpm.toFixed(0);
+  $("rpmS").textContent = (th.clipG[j] ? "gyro maxed: rebuilt" : "") + (r.slow ? (th.clipG[j] ? " · " : "") + "shown slowed" : "");
+  $("rpNow").innerHTML = `${ms < 0 ? `${(-ms).toFixed(0)} ms before release` : ms < 1 ? "release" : `${ms.toFixed(0)} ms after release`} · ` +
+    `<b>${th.spd[j].toFixed(1)} mph</b> · force ${th.fNew[j].toFixed(1)} g` +
+    (!th.clipA[j] ? "" : fitted(th, j) ? " (rebuilt: the sensor read 16 g)" : " (more: the sensor maxed out)");
+}
+function updateUi(rpm, slow) {
+  if (now() - st.rateT >= 1000) { st.rate = st.rateN * 1000 / (now() - st.rateT); st.rateN = 0; st.rateT = now(); }
+  $("rpmN").textContent = rpm < 1 ? "0" : rpm.toFixed(0);
+  $("rpmS").textContent = !st.n ? "" : (st.wz > 0.5 ? "counter-clockwise" : st.wz < -0.5 ? "clockwise" : "") +
+    (st.wSrc === "force" ? " · from the off-centre force (gyro maxed)" : st.wSrc === "maxed" ? " · gyro maxed – calibrate the spin radius for the real value" : "") +
+    (slow ? " · shown slowed" : "");
+  $("lastBtn").hidden = !throwsList.length;
+  if (!st.n) { if (!connected) showMsg(device ? "" : "Connect the disc to see it here.<small>Chrome or Edge on a computer, Bluefy on an iPhone · one page or app connected at a time</small>"); return; }
+  showMsg("");
+  const n = Z.clone().applyQuaternion(st.q), tilt = Math.acos(Math.max(-1, Math.min(1, n.z))) * R2D;
+  const row = (k, v, s) => `<span>${k}</span><span class="v">${v}</span>` + (s ? `<span class="s">${s}</span>` : "");
+  $("readout").innerHTML =
+    row("State", st.mode) +
+    row("Tilt from level", `${tilt.toFixed(1)}°`, n.z < 0 ? "upside down" : "") +
+    row("Turning", `${st.rot.toFixed(0)} °/s`) +
+    row("Force", `${st.aMag.toFixed(2)} g`, st.mode === "in the air" ? "free fall: no gravity felt" : "1 g = lying still") +
+    row("Readings", `${st.rate.toFixed(0)} /s`) +
+    (info.batt > 0 ? row("Battery", `${info.batt.toFixed(2)} V`) : "") +
+    (throwsList.length ? `<span class="s">Throw it: each throw replays here in slow motion.</span>` : "");
+}
+const now = () => performance.now();
+requestAnimationFrame(frame);
+
+// ================================================================ test hook (no hardware)
+window.disc3d = { onPacket, st, info, sendCmd, rp, throwsList, look, faceMe, enterReplay, exitReplay, rateNow, analyzeThrow, headingOffset: () => headingOffset };
+</script>
+</body>
+</html>

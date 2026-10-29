@@ -1,0 +1,2161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>DiscTracker Live</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1f2630; --line: #2a323d;
+    --text: #e8edf3; --muted: #8b96a5; --accent: #3ddc97; --accent2: #4aa8ff;
+    --warn: #ffb547; --bad: #ff5d5d;
+    --radius: 16px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f6f8; --panel: #ffffff; --panel2: #eef1f4; --line: #dde2e8;
+      --text: #111820; --muted: #5c6773; --accent: #0f9d63; --accent2: #1f6fd1;
+      --warn: #b86e00; --bad: #d12f2f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent; }
+  body { padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+  main { max-width: 720px; margin: 0 auto; display: grid; gap: 14px; }
+
+  header { display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 20px; margin: 0; letter-spacing: .02em; flex: 1; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px; }
+  .dot.on { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+  .dot.busy { background: var(--warn); }
+  #status { font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62vw; }
+
+  button { font: inherit; border: 0; border-radius: 12px; padding: 12px 16px; cursor: pointer;
+    background: var(--panel2); color: var(--text); font-weight: 600; }
+  button.primary { background: var(--accent); color: #062015; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > button { flex: 1; min-width: 120px; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+  .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+
+  /* live hero */
+  .hero { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
+  .big { font-size: clamp(56px, 18vw, 96px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  .unit { font-size: 18px; color: var(--muted); font-weight: 600; margin-left: 6px; }
+  .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 700;
+    background: var(--panel2); color: var(--muted); margin-top: 8px; }
+  .pill.still { color: var(--accent); }
+  .pill.moving { color: var(--accent2); }
+  .pill.capturing { color: #062015; background: var(--warn); }
+  .pill.clipped { color: var(--bad); }
+
+  /* disc attitude */
+  /* 3D disc: the scene is the ground seen from ~35 deg above; the disc tilts in it. */
+  .stage { width: 130px; height: 130px; perspective: 420px; display: grid; place-items: center;
+    transition: opacity .3s; text-align: center; }
+  .stage.unsure { opacity: .35; }
+  .scene { transform: rotateX(55deg); transform-style: preserve-3d; }
+  .disc { width: 100px; height: 100px; position: relative; transform-style: preserve-3d;
+    transition: transform .05s linear; }
+  .face { position: absolute; inset: 0; border-radius: 50%; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .face.top { border: 3px solid var(--accent2);
+    background: radial-gradient(circle, var(--panel) 0 20%, var(--accent2) 21% 25%, var(--panel2) 26% 100%); }
+  .usb { position: absolute; top: 4px; left: 50%; transform: translateX(-50%); font-size: 9px; font-weight: 800;
+    letter-spacing: .04em; background: var(--warn); color: #1d1300; border-radius: 3px; padding: 1px 4px; }
+  .face.bottom { transform: rotateY(180deg); border: 3px solid var(--bad);
+    background: repeating-radial-gradient(circle, var(--panel2) 0 6px, var(--panel) 6px 12px); }
+  .stage-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  button.tiny { padding: 5px 9px; font-size: 12px; margin-top: 6px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  @media (max-width: 480px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { background: var(--panel2); border-radius: 12px; padding: 10px 12px; }
+  .tile .v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .v small { font-size: 13px; color: var(--muted); font-weight: 600; }
+
+  canvas { width: 100%; height: 110px; display: block; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+
+  /* throw result */
+  .six { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+  .six .tile .v { font-size: 28px; }
+  .six .tile.main .v { font-size: clamp(34px, 11vw, 46px); font-weight: 800; }
+  .six .tile.main { background: var(--panel2); border: 1px solid var(--accent); }
+  .result-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .speed { font-size: clamp(48px, 15vw, 80px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .chip { font-size: 12px; padding: 4px 8px; border-radius: 8px; background: var(--panel2); color: var(--warn); }
+  .empty { color: var(--muted); text-align: center; padding: 18px 0; }
+  .flash { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 0 transparent; } }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 14px; }
+  th, td { text-align: right; padding: 8px 4px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+
+  .note { font-size: 14px; color: var(--muted); }
+  .batt { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .batt.low { color: var(--bad); font-weight: 700; }
+  .banner { border-radius: 12px; padding: 12px 14px; font-size: 15px; background: var(--panel2);
+    border-left: 4px solid var(--accent2); }
+  .banner.warn { border-left-color: var(--warn); }
+  .banner.good { border-left-color: var(--accent); }
+  .steps { margin: 10px 0 12px; padding-left: 20px; font-size: 15px; }
+  .steps li { margin: 4px 0; }
+  button.wide { width: 100%; font-size: 17px; padding: 14px; }
+  .calmsg { margin-top: 10px; font-size: 15px; min-height: 1.4em; color: var(--muted); }
+  .calmsg.ok { color: var(--accent); font-weight: 600; }
+  .calmsg.bad { color: var(--bad); font-weight: 600; }
+  .calmsg.busy { color: var(--warn); font-weight: 600; }
+  .note b { color: var(--text); }
+  #unsupported { border-color: var(--warn); }
+  .hidden { display: none !important; }
+  /* throw detection */
+  input[type=range] { width: 100%; margin: 14px 0 4px; accent-color: var(--accent); height: 28px; }
+  .sensScale { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  /* find my disc */
+  .meter { position: relative; height: 34px; border-radius: 17px; background: var(--panel2); overflow: hidden; margin-top: 14px; }
+  .meterFill { position: absolute; inset: 0 auto 0 0; width: 0%; border-radius: 17px;
+    background: linear-gradient(90deg, #3b82f6, #22c55e 45%, #f59e0b 70%, #ef4444); transition: width .25s; }
+  .meterPeak { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--text); }
+  .findRow { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8px; gap: 8px; }
+  .findWord { font-size: 26px; font-weight: 800; }
+  .trend { font-size: 17px; font-weight: 700; }
+  .trend.up { color: #ef4444; } .trend.down { color: #3b82f6; } .trend.flat { color: var(--muted); }
+  .findDist { font-size: 17px; margin-top: 4px; }
+  .dirBox { display: flex; gap: 14px; align-items: center; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .dirArrow { width: 110px; height: 110px; flex: none; transition: transform .2s; }
+  .dirText { flex: 1; }
+  .dirMsg { font-size: 16px; margin-top: 4px; }
+  .calib { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .calib summary { cursor: pointer; font-weight: 600; }
+  .calRow { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  .calRow .d { width: 52px; font-weight: 700; }
+  .calRow .r { flex: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .calRow button { padding: 8px 12px; }
+  /* tabs */
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 5px; }
+  .tabs button { padding: 10px; background: transparent; color: var(--muted); }
+  .tabs button.on { background: var(--accent2); color: #fff; }
+  #simOpts { padding: 10px 14px; }
+  #simOpts > summary { cursor: pointer; font-size: 14px; list-style-position: inside; }
+  #simOpts > summary .label { display: inline; margin-right: 6px; }
+  #simOpts[open] > summary { margin-bottom: 8px; }
+  #simOpts > section.card { box-shadow: none; border: 1px solid rgba(127, 127, 127, 0.25); margin-top: 8px; }
+  #sim3d { display: block; width: 100%; height: 70vh; min-height: 420px; border: 0; border-radius: 14px; background: #0b0f14; }
+  .tabs .tab3d { display: flex; align-items: center; justify-content: center; padding: 10px; border-radius: 10px; font-weight: 700;
+    color: #fff; text-decoration: none; background: linear-gradient(135deg, #ff8a1f, #e25d1a); }
+  .tab { display: grid; gap: 14px; }
+  /* buttons feel pressed */
+  button { transition: transform .08s, background-color .15s, color .15s, box-shadow .2s; }
+  button:not(:disabled):active { transform: scale(.96); }
+  button.pressed { background: var(--accent2) !important; color: #fff !important; box-shadow: 0 0 0 3px rgba(74,168,255,.35); }
+  button.on { background: var(--accent2); color: #fff; }
+  button.primary.on { background: var(--warn); color: #1d1300; }
+  #sessBtn.on { background: var(--bad); color: #fff; }
+  .testRow { flex-wrap: wrap; gap: 8px; }
+  .testRow button { flex: 1 1 30%; min-width: 96px; }
+  #recCard.full { box-shadow: 0 0 0 2px var(--bad) inset; }
+  .tab, .tab > .card { min-width: 0; }          /* let wide tables scroll inside their card */
+  .recList { gap: 6px; }
+  a.tdLink { text-decoration: none; font-weight: 600; padding: 2px 6px; }
+  .zoomRow { gap: 6px; flex-wrap: nowrap; }
+  .zoomRow button { flex: 1 1 0; min-width: 0; padding: 8px 0; }
+  .recList button { font-size: 13px; padding: 8px 10px; }
+  .recChart { width: 100%; height: 260px; display: block; margin-top: 10px; background: var(--panel2); border-radius: 10px; touch-action: pan-y; }
+  .tableWrap { max-height: 260px; overflow: auto; max-width: 100%; }
+  #capTable td, #capTable th { padding: 4px 6px; font-size: 12px; white-space: nowrap; }
+  #capTable tr.sel td { background: var(--panel2); }
+  #capTable tbody tr { cursor: pointer; }
+  /* simulate form */
+  .field { width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); margin-top: 8px; }
+  .lbl { display: block; margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .inputs6, .inputs4, .inputs2 { display: grid; gap: 8px; margin-top: 10px; }
+  .inputs6 { grid-template-columns: repeat(3, 1fr); }
+  .inputs4 { grid-template-columns: repeat(4, 1fr); }
+  .inputs2 { grid-template-columns: repeat(2, 1fr); }
+  .inputs6 label, .inputs4 label, .inputs2 label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .inputs6 label span, .inputs2 label span { text-transform: none; }
+  .inputs6 input, .inputs4 input, .inputs2 input { width: 100%; font: inherit; font-size: 18px; font-weight: 700; padding: 8px 10px;
+    border-radius: 10px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); margin-top: 4px; }
+  .windRow { margin-top: 6px; }
+  .windRow button { min-width: 60px; padding: 10px 6px; }
+  .simStats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+  @media (max-width: 480px) { .simStats { grid-template-columns: repeat(2, 1fr); } }
+  .simStats .tile .v { font-size: 22px; }
+  .simStats .tile.main .v { font-size: 30px; font-weight: 800; }
+  .simTop { width: 100%; height: 420px; display: block; margin-top: 12px; background: var(--panel2); border-radius: 12px; }
+  .simSide { width: 100%; height: 140px; display: block; margin-top: 8px; background: var(--panel2); border-radius: 12px; }
+  .chip.info { color: var(--accent2); }
+  .hrow { cursor: pointer; }
+  .hrow:active td { background: var(--panel2); }
+  .spinCal { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .battLine { font-size: 18px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>🥏 DiscTracker</h1>
+    <span id="batt" class="batt hidden"></span>
+    <span id="status"><span class="dot" id="dot"></span><span id="statusText">Not connected</span></span>
+  </header>
+
+  <div class="card hidden" id="unsupported">
+    <b>This browser can't use Bluetooth.</b>
+    <p class="note">On <b>Android</b>, open this page in <b>Chrome</b>. On <b>iPhone</b>, Safari can't do it, so install the free
+      <b>Bluefy</b> browser from the App Store and open this page there.</p>
+  </div>
+
+  <div class="row">
+    <button class="primary" id="connectBtn">Connect to disc</button>
+  </div>
+
+  <nav class="tabs">
+    <button data-tab="throw" class="on">Throw data</button>
+    <button data-tab="sim">3D simulator</button>
+    <button data-tab="rec">Recordings</button>
+    <a class="tab3d" href="disc3d.html" title="Each throw in 3D: the throw rebuilt past the sensor's limits, then its flight to the net or the ground">🥏 3D view</a>
+  </nav>
+
+  <div class="banner hidden" id="banner"></div>
+
+  <div id="tab-throw" class="tab">
+  <section class="card" id="resultCard">
+    <div class="result-head">
+      <div class="label">Last throw</div>
+      <div class="note" id="resultMeta">no throw yet</div>
+    </div>
+    <div class="six">
+      <div class="tile main"><div class="label">Speed</div><div class="v"><span id="rSpeed">–</span><small> mph</small></div></div>
+      <div class="tile main"><div class="label">Spin</div><div class="v"><span id="rSpin">–</span><small> rpm</small></div></div>
+      <div class="tile"><div class="label">Hyzer</div><div class="v"><span id="rHyzer">–</span><small>°</small></div></div>
+      <div class="tile"><div class="label">Nose</div><div class="v"><span id="rNose">–</span><small>°</small></div></div>
+      <div class="tile"><div class="label">Launch</div><div class="v"><span id="rLaunch">–</span><small>°</small></div></div>
+      <div class="tile"><div class="label">Wobble</div><div class="v"><span id="rWobble">–</span><small>°</small></div></div>
+    </div>
+    <button id="copyBtn" class="wide" style="margin-top:12px" disabled>Copy numbers for the simulator</button>
+    <button id="tdBtn" class="primary wide" style="margin-top:8px" disabled>Open this throw in TechDisc's simulator ↗</button>
+    <p class="note" id="tdNote" style="margin:6px 0 0">Uses the disc set up in the Simulate tab. TechDisc has no wobble setting, so wobble isn't sent.</p>
+    <div class="chips" id="rChips"></div>
+    <p class="note" id="resultEmpty">Hold the disc still for a moment, then throw with snap. Results are ready ~0.3 s
+      after release (needs ~¼ s of clean flight – stand 3–5 m from a net). Out of range? It reconnects and the
+      result arrives then.</p>
+    <p class="note" id="captureInfo" style="margin-bottom:0"></p>
+  </section>
+
+  <section class="card">
+    <div class="result-head">
+      <div class="label">Throw detection</div>
+      <div class="note" id="sensNote">–</div>
+    </div>
+    <input type="range" id="sensBar" min="1" max="5" step="1" value="5" disabled>
+    <div class="sensScale"><span>Hand tests</span><span>Real throws</span></div>
+    <p class="note" id="sensDesc" style="margin-bottom:0"></p>
+  </section>
+
+  <section class="card" id="findCard">
+    <div class="result-head">
+      <div class="label">Find my disc</div>
+      <div class="note" id="findState">off</div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="findBtn" disabled>Start finding</button>
+      <button id="ledBtn" disabled>Flash LED</button>
+      <button id="beepBtn">Beeps: off</button>
+    </div>
+
+    <div class="meter" id="meter">
+      <div class="meterFill" id="meterFill"></div>
+      <div class="meterPeak hidden" id="meterPeak"></div>
+    </div>
+    <div class="findRow">
+      <div><span class="findWord" id="findWord">–</span> <span class="trend" id="trend"></span></div>
+      <div class="note" id="rssiText"></div>
+    </div>
+    <div class="findDist" id="findDist">Distance: –</div>
+
+    <div class="dirBox">
+      <svg id="dirArrow" class="dirArrow hidden" viewBox="-50 -50 100 100" aria-hidden="true">
+        <circle r="46" fill="none" stroke="var(--line)" stroke-width="3"/>
+        <path id="arrowPath" d="M0,-38 L16,6 L5,2 L5,30 L-5,30 L-5,2 L-16,6 Z" fill="var(--accent)"/>
+      </svg>
+      <div class="dirText">
+        <div class="label">Direction</div>
+        <div id="dirMsg" class="dirMsg">Start finding, then tap <b>Find direction</b>.</div>
+        <button id="dirBtn" disabled style="margin-top:8px">Find direction</button>
+      </div>
+    </div>
+
+    <details class="calib">
+      <summary>Calibrate distance (do once, in an open area)</summary>
+      <ol class="steps">
+        <li>Lay the disc flat on the ground in an open spot.</li>
+        <li>Tap <b>Start finding</b> above.</li>
+        <li>For each distance: stand that far away (one long stride ≈ 1 m), hold the phone at chest height
+          facing the disc, tap <b>Record</b> and stay still for 5 seconds.</li>
+        <li>Record at least 3 distances, then tap <b>Save calibration</b>.</li>
+      </ol>
+      <div id="calRows"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="calSave" disabled>Save calibration</button>
+        <button id="calReset">Reset</button>
+      </div>
+      <p class="note" id="calFit" style="margin-bottom:0"></p>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="hero">
+      <div>
+        <div class="label">Spin</div>
+        <div><span class="big" id="spin">–</span><span class="unit">rpm</span></div>
+        <span class="pill" id="state">waiting</span>
+      </div>
+      <div>
+        <div class="stage" id="stage" title="Disc tilt (accurate while still)">
+          <div class="scene"><div class="disc" id="disc">
+            <div class="face top" id="discTop"><span class="usb">USB</span></div><div class="face bottom"></div>
+          </div></div>
+        </div>
+        <div class="stage-label" id="stageLabel">tilt</div>
+        <button id="frontBtn" class="tiny" disabled>Set front</button>
+      </div>
+    </div>
+    <div class="tiles" style="margin-top:14px">
+      <div class="tile"><div class="label">G-force</div><div class="v" id="g">–<small> g</small></div></div>
+      <div class="tile"><div class="label">Rotation</div><div class="v" id="rot">–<small> °/s</small></div></div>
+      <div class="tile"><div class="label">Roll</div><div class="v" id="roll">–<small>°</small></div></div>
+      <div class="tile"><div class="label">Pitch</div><div class="v" id="pitch">–<small>°</small></div></div>
+    </div>
+    <div style="margin-top:14px">
+      <canvas id="chart" width="700" height="110"></canvas>
+      <div class="legend"><span><i style="background:var(--accent)"></i>spin (rpm)</span><span><i style="background:var(--accent2)"></i>g-force</span><span>last 10 s</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="result-head">
+      <div class="label">History</div>
+      <span><button id="exportBtn" style="padding:6px 10px;font-size:13px">Export CSV</button>
+      <button id="clearLocal" style="padding:6px 10px;font-size:13px">Clear</button></span>
+    </div>
+    <div id="histEmpty" class="empty">No throws yet.</div>
+    <table id="histTable" class="hidden">
+      <thead><tr><th>#</th><th>mph</th><th>rpm</th><th>hyz</th><th>nose</th><th>lau</th><th>wob</th><th>TD</th></tr></thead>
+      <tbody id="histBody"></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <div class="result-head">
+      <div class="label">Calibrate &amp; test</div>
+      <div class="note" id="calSaved"></div>
+    </div>
+    <p class="note"><b>Best:</b> the step-by-step <a href="calibrate.html">calibration page</a> checks the calibration first,
+      then measures the gyro offset and the spin radius properly (Chrome on a computer, or Bluefy).</p>
+    <ol class="steps">
+      <li>Mount the board in the <b>center</b> of the disc, under the flight plate, lying flat.</li>
+      <li>Lay the disc <b>flat, label facing UP</b>, on a table or the floor (unplug the USB cable first).</li>
+      <li>Tap <b>Calibrate</b> and don't touch the disc for 3 seconds.</li>
+    </ol>
+    <button class="primary wide" id="calBtn" disabled>Calibrate</button>
+    <div class="calmsg" id="calMsg">Connect to the disc first.</div>
+    <p class="note">Do this once after mounting (and again if the board moves). It's saved on
+      the disc, so turning it off doesn't lose it.</p>
+    <div class="spinCal">
+      <div class="result-head"><div class="label">Spin above 382 rpm</div><div class="note" id="spinCalState">–</div></div>
+      <p class="note">The gyro tops out at 382 rpm. Above that the disc estimates spin two ways: the drag "wave" in
+        flight, and centripetal force – which needs to know how far the sensor sits from the spin axis.
+        It <b>learns that by itself from gentle spinning throws (under ~380 rpm)</b>, or calibrate it here:</p>
+      <ol class="steps">
+        <li>Lay the disc <b>flat, label up</b>, on a smooth table (not a turntable: that measures the turntable's axis).</li>
+        <li>Tap <b>Calibrate spin</b>, then flick it into a spin of <b>120–320 rpm</b> (2–5 turns a second) and let it spin for about 10 seconds.
+        (The <a href="calibrate.html">calibration page</a> does this more accurately.)</li>
+      </ol>
+      <button id="spinCalBtn" class="wide" disabled>Calibrate spin</button>
+    </div>
+  </section>
+
+  <section class="card" id="recCard">
+    <div class="result-head">
+      <div class="label">Full sensor recording</div>
+      <div class="note" id="logState">–</div>
+    </div>
+    <p class="note" style="margin-top:6px">Saves <b>every</b> gyro and accelerometer reading (416 a second) on the disc
+      itself, so it keeps recording while the disc is out of range. It <b>stops by itself when the memory is full</b>
+      and won't record again until you move the data off and clear it.</p>
+    <div class="meter" style="height:16px;margin-top:10px"><div class="meterFill" id="logFill" style="background:var(--accent2)"></div></div>
+    <p class="note" id="logInfo" style="margin:8px 0 12px">Connect to see what's recorded.</p>
+    <button class="primary wide" id="sessBtn" disabled>● Record all sensor data</button>
+    <button class="wide" id="goRecBtn" style="margin-top:8px">⬇ Download &amp; view recordings →</button>
+
+    <div class="label" style="margin-top:16px">What test is next?</div>
+    <p class="note" style="margin:4px 0 8px">Tap before each test – it's written into the recording, so every test is labeled
+      when you look at the data later.</p>
+    <div class="row testRow">
+      <button class="testBtn" data-mark="1">Drop</button>
+      <button class="testBtn" data-mark="2">Throw into net</button>
+      <button class="testBtn" data-mark="3">Real throw</button>
+      <button class="testBtn" data-mark="4">Hand spin / flick</button>
+      <button class="testBtn" data-mark="5">Other</button>
+    </div>
+    <p class="note" id="markMsg" style="margin:6px 0 0"></p>
+
+    <details style="margin-top:14px">
+      <summary>Move the data off with a computer instead</summary>
+      <p class="note">Easiest: the <b>Recordings</b> tab downloads it straight to this phone over Bluetooth. Or with a computer:</p>
+      <ol class="steps">
+        <li>Stop recording (or let it fill up). Plug the disc into the computer with a data cable.</li>
+        <li>Close the Arduino Serial Monitor. In the <code>Disc_tracker\analysis</code> folder run:<br>
+          <code>py disclab.py export --clear</code></li>
+        <li>It saves everything to <code>analysis\data\&lt;date&gt;</code> (CSV files for Excel) and only then erases the disc,
+          so it's ready to record again.</li>
+      </ol>
+      <p class="note">Disc light: <b>green</b> blink every 4 s = on · <b>blue</b> every second = recording ·
+        <b>red</b> every 2 s = memory full.</p>
+      <button id="logClearBtn" class="wide" disabled>Erase recording without saving</button>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="result-head">
+      <div class="label">Power</div>
+      <div class="note" id="powerMode">–</div>
+    </div>
+    <div class="battLine" id="battLine">Battery: –</div>
+    <div class="row" style="margin-top:10px">
+      <button id="standbyBtn" disabled>Standby</button>
+      <button id="wakeBtn" disabled>Wake up</button>
+      <button id="offBtn" disabled>Turn off</button>
+    </div>
+    <ul class="steps" style="margin-bottom:0">
+      <li><b>Standby</b> – saves most of the battery. Tap <b>Wake up</b>, or just pick up the disc.
+        Happens on its own after 5 min without motion.</li>
+      <li><b>Turn off</b> – saves the most. While off the disc can't hear Bluetooth, so turn it back on with a
+        <b>firm flick or shake</b>. It also turns itself off after 4 h in standby with no phone, or when the
+        battery is low. (Never while plugged into USB – it uses standby then.)</li>
+    </ul>
+  </section>
+
+  <div class="row">
+    <button id="clearBoard" disabled>Erase throws stored on disc</button>
+  </div>
+
+  <p class="note"><b>On a computer?</b> <a href="sim.html">Open the big-screen simulator</a> – it connects to the disc
+    and flies every throw automatically. Or watch a <a href="disc3d.html">live 3D copy of the disc</a> move and spin.</p>
+  <p class="note">Version 2026-10-22. Roll/pitch are only accurate while the disc is still.
+    Spin above ~382 rpm exceeds the gyro's range; the board then estimates it from the accelerometer.</p>
+  </div>
+
+  <div id="tab-rec" class="tab hidden">
+    <section class="card">
+      <div class="result-head">
+        <div class="label">Download from disc</div>
+        <div class="note" id="dlDiscInfo">–</div>
+      </div>
+      <p class="note" style="margin-top:6px">Copies everything the disc recorded onto this phone over Bluetooth, then checks
+        every byte. Keep the phone near the disc. A full 6½-minute recording takes about 1–2 minutes.
+        If it disconnects, it carries on where it stopped.</p>
+      <button class="primary wide" id="dlBtn" disabled>⬇ Download from disc</button>
+      <div class="meter" style="height:16px;margin-top:10px"><div class="meterFill" id="dlFill" style="background:var(--accent2)"></div></div>
+      <p class="note" id="dlMsg" style="margin:8px 0 0">Connect to the disc first.</p>
+      <button class="wide" id="dlRestartBtn" style="margin-top:12px" disabled>Erase disc &amp; start a new recording</button>
+      <p class="note" style="margin:6px 0 0">Only unlocks after a download has been checked and saved here, so nothing can be lost.</p>
+    </section>
+
+    <section class="card">
+      <div class="result-head">
+        <div class="label">Saved on this phone</div>
+        <div class="note" id="recCount"></div>
+      </div>
+      <div class="row recList" id="recList" style="margin-top:10px"></div>
+      <div id="recView" class="hidden">
+        <p class="note" id="recSummary" style="margin:12px 0 6px"></p>
+        <div class="row zoomRow">
+          <button id="zoomAll">All</button><button id="zoomIn">＋</button><button id="zoomOut">－</button>
+          <button id="panL">◀</button><button id="panR">▶</button>
+        </div>
+        <canvas id="recChart" class="recChart"></canvas>
+        <p class="note" style="margin:4px 0 10px">Top: total force (g). Bottom: spin from the gyro (rpm; flat at 382 = gyro maxed out).
+          Coloured lines = test markers, shaded = captures (green counted, grey rejected). Tap a row below to zoom in.</p>
+        <div class="tableWrap"><table id="capTable"></table></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="csvAllBtn">Excel file – every reading</button>
+          <button id="csvThrowBtn">Excel file – throw results</button>
+          <button id="csvRawBtn">Excel file – raw I²C counts</button>
+          <button id="binBtn">Raw file (for disclab)</button>
+          <button id="recDelBtn">Delete</button>
+        </div>
+      </div>
+      <p class="note" id="recEmpty">Nothing saved yet.</p>
+    </section>
+  </div>
+
+  <div id="tab-sim" class="tab hidden">
+    <details id="simOpts" class="card">
+      <summary><span class="label">Flies with</span> <span id="simOptsSum"></span></summary>
+    <section class="card">
+      <div class="result-head"><div class="label">Disc it flies with</div></div>
+      <select id="bagSel" class="field"></select>
+      <label class="lbl">Name<input id="dName" class="field" type="text" maxlength="40"></label>
+      <div class="inputs4">
+        <label>Speed<input id="dSpeed" type="number" inputmode="decimal" step="0.5" min="1" max="15"></label>
+        <label>Glide<input id="dGlide" type="number" inputmode="decimal" step="0.5" min="1" max="7"></label>
+        <label>Turn<input id="dTurn" type="number" inputmode="decimal" step="0.5" min="-5" max="2"></label>
+        <label>Fade<input id="dFade" type="number" inputmode="decimal" step="0.5" min="0" max="6"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="bagSave">Save to bag</button>
+        <button id="bagDel">Remove</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="result-head"><div class="label">Conditions</div></div>
+      <div class="inputs2">
+        <label>Wind <span>mph</span><input id="windMph" type="number" inputmode="decimal" step="1" min="0" value="0"></label>
+        <label>Release height <span>ft</span><input id="relHeight" type="number" inputmode="decimal" step="0.5" min="0" value="4"></label>
+      </div>
+      <div class="label" style="margin-top:12px">Wind from</div>
+      <div class="row windRow">
+        <button class="windBtn on" data-from="0">Head</button>
+        <button class="windBtn" data-from="180">Tail</button>
+        <button class="windBtn" data-from="270">Left</button>
+        <button class="windBtn" data-from="90">Right</button>
+      </div>
+      <label class="lbl">Exact direction <span class="note">(0 = straight at you, 90 = from your right)</span>
+        <input id="windFrom" class="field" type="number" inputmode="numeric" step="5" min="0" max="359" value="0"></label>
+    </section>
+
+    </details>
+    <div id="sim3dWrap"><p class="note" id="sim3dWait">Loading the 3D view…</p></div>
+    <p class="note" style="margin:0">Throw the disc: the 3D view replays the throw, then flies the rest of it with the disc and wind below
+      (into a net it shows the real flight to the net). <b>Face me</b>, <b>Re-level</b> and <b>Look</b> work as on the 3D page.</p>
+    <div hidden id="oldSim">
+    <section class="card">
+      <div class="result-head"><div class="label">Throw</div></div>
+      <select id="simSource" class="field"></select>
+      <div class="inputs6">
+        <label>Speed <span>mph</span><input id="sSpeed" type="number" inputmode="decimal" step="0.1"></label>
+        <label>Spin <span>rpm</span><input id="sSpin" type="number" inputmode="decimal" step="10"></label>
+        <label>Hyzer <span>°</span><input id="sHyzer" type="number" inputmode="decimal" step="0.5"></label>
+        <label>Nose <span>°</span><input id="sNose" type="number" inputmode="decimal" step="0.5"></label>
+        <label>Launch <span>°</span><input id="sLaunch" type="number" inputmode="decimal" step="0.5"></label>
+        <label>Wobble <span>°</span><input id="sWobble" type="number" inputmode="decimal" step="0.5"></label>
+      </div>
+      <label class="lbl">Throw style
+        <select id="simStyle" class="field">
+          <option value="rhbh">Right-hand backhand</option>
+          <option value="rhfh">Right-hand forehand</option>
+          <option value="lhbh">Left-hand backhand</option>
+          <option value="lhfh">Left-hand forehand</option>
+        </select>
+      </label>
+      <p class="note" id="spinNote" style="margin:6px 0 0"></p>
+    </section>
+    </div>
+
+    <div hidden>
+    <button class="primary wide" id="simBtn">Simulate flight</button>
+
+    <section class="card hidden" id="simResult">
+      <div class="result-head"><div class="label">Flight</div><button id="simReplay" style="padding:6px 12px;font-size:13px">Replay</button></div>
+      <div class="simStats">
+        <div class="tile main"><div class="label">Distance</div><div class="v"><span id="simDist">–</span><small> ft</small></div></div>
+        <div class="tile"><div class="label">Finish</div><div class="v"><span id="simLat">–</span><small> ft</small></div></div>
+        <div class="tile"><div class="label">Max height</div><div class="v"><span id="simHigh">–</span><small> ft</small></div></div>
+        <div class="tile"><div class="label">Hang time</div><div class="v"><span id="simTime">–</span><small> s</small></div></div>
+      </div>
+      <canvas id="simTop" class="simTop"></canvas>
+      <canvas id="simSide" class="simSide"></canvas>
+      <p class="note" id="simLegend" style="margin-bottom:0"></p>
+      <p class="note" style="margin-bottom:0">Physics model built from scratch: flight shape (turn, fade, wind effects) is the
+        goal; absolute distance is approximate until it's tuned against your real throws.</p>
+    </section>
+    </div>
+  </div>
+</main>
+
+<script src="flight.js?v=2026-10-21b"></script>
+<script>
+"use strict";
+// ---- protocol (must match disc_tracker_v2.ino) ----
+const SVC     = "19b10000-e8f2-537e-4f6c-d104768a1214";
+const SUMMARY = "19b10001-e8f2-537e-4f6c-d104768a1214";
+const CMD     = "19b10002-e8f2-537e-4f6c-d104768a1214";
+const LIVE    = "19b10004-e8f2-537e-4f6c-d104768a1214";
+const STATUS  = "19b10005-e8f2-537e-4f6c-d104768a1214";
+const FIND    = "19b10006-e8f2-537e-4f6c-d104768a1214";
+const LOGINFO = "19b10007-e8f2-537e-4f6c-d104768a1214";
+const LOGDATA = "19b10008-e8f2-537e-4f6c-d104768a1214";
+const BTSTREAM = "19b10009-e8f2-537e-4f6c-d104768a1214";
+
+const LIVE_STILL = 1, LIVE_CAPTURING = 2, LIVE_GYRO_SAT = 4;
+const F = { VALID: 1, GYRO_Z_SAT: 2, ACCEL_SAT: 4, NO_RELEASE: 8, NO_STATIC: 16, SPIN_FROM_ACC: 32, SHORT_FLIGHT: 64, SPIN_CCW: 128 };
+
+const $ = id => document.getElementById(id);
+let device = null, cmdChar = null, userDisconnect = false, wakeLock = null;
+let spinAngle = 0;
+
+// ---- live history for the chart ----
+const series = [];                 // {t, spin, g}
+const WINDOW_MS = 10000;
+
+function setStatus(text, cls) {
+  $("statusText").textContent = text;
+  $("dot").className = "dot" + (cls ? " " + cls : "");
+}
+
+// "Front" = the direction of the board's USB-C port, measured once with Set front.
+const FRONT_KEY = "disctracker.front.v1";
+let frontDeg = (() => { try { return parseFloat(localStorage.getItem(FRONT_KEY)) || 0; } catch { return 0; } })();
+let lastUp = null;
+const upHist = [];
+
+// Tilt relative to the front: roll + = right edge down, pitch + = front (USB) up.
+function tiltFrom(u) {
+  const a = frontDeg * Math.PI / 180, f = [Math.cos(a), Math.sin(a)], l = [-Math.sin(a), Math.cos(a)];
+  const uf = u[0] * f[0] + u[1] * f[1], ul = u[0] * l[0] + u[1] * l[1];
+  return { roll: Math.atan2(-ul, u[2]) * 180 / Math.PI, pitch: Math.atan2(-uf, Math.hypot(ul, u[2])) * 180 / Math.PI };
+}
+
+function parseLive(dv) {
+  const ver = dv.getUint8(0);
+  if (ver >= 2) {                        // filtered attitude: live even while moving
+    const u = [dv.getInt16(4, true) / 1e4, dv.getInt16(6, true) / 1e4, dv.getInt16(8, true) / 1e4];
+    lastUp = u; upHist.push(u); if (upHist.length > 12) upHist.shift();
+    const spinSigned = dv.getInt16(12, true);
+    return { ver, flags: dv.getUint8(1), g: dv.getUint16(10, true) / 1000, spin: Math.abs(spinSigned), spinSigned,
+             rot: dv.getUint16(14, true), throws: dv.getUint16(16, true), spinAlt: dv.getUint16(18, true),
+             up: u, ...tiltFrom(u) };
+  }
+  return {                               // v1 (old firmware): accel-only tilt, valid only when still
+    ver, flags: dv.getUint8(1), g: dv.getUint16(8, true) / 1000, spin: dv.getUint16(10, true), spinSigned: 0,
+    rot: dv.getUint16(12, true), roll: -dv.getInt16(14, true) / 100, pitch: dv.getInt16(16, true) / 100,
+    throws: dv.getUint16(18, true),
+  };
+}
+
+function parseSummary(dv) {
+  const t = parseSummaryRaw(dv);
+  if (t && t.wobbleOld && Number.isFinite(t.wobble)) { t.wobbleRaw = t.wobble; t.wobble = wobbleFromRateAngle(t.wobble); }
+  return t;
+}
+function parseSummaryRaw(dv) {
+  if (dv.getUint8(0) === 3 && dv.byteLength >= 20) {        // v3: 20-byte fixed point
+    return {
+      v: 3, flags: dv.getUint8(1), seq: dv.getUint16(2, true), boot: dv.getUint16(4, true),
+      speed: dv.getUint16(6, true) / 10, spin: dv.getUint16(8, true),
+      hyzer: dv.getInt16(10, true) / 10, nose: dv.getInt16(12, true) / 10,
+      launch: dv.getInt16(14, true) / 10, wobble: dv.getUint16(16, true) / 10,
+      peak: dv.getUint8(18) / 4, ccw: !!(dv.getUint8(1) & 128), spinSrc: dv.getUint8(19) & 0x7f,
+      wobbleOld: !(dv.getUint8(19) & 0x80),   // older firmware: rate-vector angle (~2x), converted below
+    };
+  }
+  if (dv.byteLength >= 40) {                                 // v2: 40-byte floats (old firmware)
+    return {
+      v: 2, battery: dv.getUint8(1), seq: dv.getUint16(2, true), t: dv.getUint32(4, true),
+      speed: dv.getFloat32(8, true), spin: dv.getFloat32(12, true), hyzer: dv.getFloat32(16, true),
+      nose: dv.getFloat32(20, true), launch: dv.getFloat32(24, true), wobble: dv.getFloat32(28, true),
+      peak: dv.getFloat32(32, true), flags: dv.getUint16(36, true),
+    };
+  }
+  return null;                                               // truncated: never silently drop - say so
+}
+
+// ---- rendering ----
+const fmt = (v, d = 0) => Number.isFinite(v) ? v.toFixed(d) : "–";
+const signed = (v, d = 1) => Number.isFinite(v) ? (v > 0 ? "+" : "") + v.toFixed(d) : "–";
+
+function showLive(s) {
+  // above 382 rpm the gyro is maxed; show the centripetal estimate instead
+  const est = (s.flags & LIVE_GYRO_SAT) && s.spinAlt > 0;
+  $("spin").textContent = est ? "~" + fmt(s.spinAlt) : fmt(s.spin);
+  $("g").innerHTML = fmt(s.g, 2) + "<small> g</small>";
+  $("rot").innerHTML = fmt(s.rot) + "<small> °/s</small>";
+  $("roll").innerHTML = signed(s.roll) + "<small>°</small>";
+  $("pitch").innerHTML = signed(s.pitch) + "<small>°</small>";
+  const st = $("state");
+  if (s.flags & LIVE_CAPTURING)      { st.textContent = "Capturing throw…"; st.className = "pill capturing"; }
+  else if (s.flags & LIVE_GYRO_SAT)  { st.textContent = est ? "Above gyro range – centripetal estimate" : "Gyro maxed (>382 rpm) – calibrate spin for an estimate";
+                                        st.className = "pill clipped"; }
+  else if (s.flags & LIVE_STILL)     { st.textContent = "Still · armed"; st.className = "pill still"; }
+  else                               { st.textContent = "Moving"; st.className = "pill moving"; }
+  // 3D disc. With v2 firmware the tilt is gyro+gravity filtered on the disc,
+  // so it stays live while moving; only v1 data has to freeze when not still.
+  // CSS: rotateY(+) drops the RIGHT edge, rotateX(+) drops the FRONT edge.
+  // (The old view used the opposite roll sign - that was the mirrored axis.)
+  const trustTilt = s.ver >= 2 || (s.flags & LIVE_STILL);
+  $("stage").classList.toggle("unsure", !trustTilt || !!(s.flags & LIVE_GYRO_SAT));
+  if (trustTilt) {
+    $("disc").style.transform = `rotateY(${s.roll}deg) rotateX(${-s.pitch}deg)`;
+    const tilt = s.up ? Math.acos(Math.max(-1, Math.min(1, s.up[2]))) * 180 / Math.PI : Math.hypot(s.roll, s.pitch);
+    $("stageLabel").textContent = tilt > 90 ? "upside down" : s.spin > 30 ? `spinning · tilt ${Math.round(tilt)}°` : `tilt ${Math.round(tilt)}°`;
+  } else {
+    $("stageLabel").textContent = s.spin > 30 ? "spinning" : "moving";
+  }
+  // Spin: the top face turns the measured way (counter-clockwise for + spin),
+  // slowed 20x so it is visible.
+  spinAngle = (spinAngle + (s.spinSigned || 0) * 6 * 0.04 / 20) % 360;
+  $("discTop").style.transform = `rotateZ(${-spinAngle}deg)`;
+
+  const now = performance.now();
+  series.push({ t: now, spin: s.spin, g: s.g });
+  while (series.length && now - series[0].t > WINDOW_MS) series.shift();
+}
+
+function drawChart() {
+  const c = $("chart"), ctx = c.getContext("2d");
+  const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  ctx.strokeStyle = css.getPropertyValue("--line"); ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(0, h * i / 4); ctx.lineTo(w, h * i / 4); ctx.stroke(); }
+  if (series.length < 2) return;
+  const now = performance.now();
+  const maxSpin = Math.max(100, ...series.map(p => p.spin)) * 1.1;
+  const maxG = Math.max(2, ...series.map(p => p.g)) * 1.1;
+  const line = (key, max, color) => {
+    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = "round";
+    series.forEach((p, i) => {
+      const x = w - (now - p.t) / WINDOW_MS * w, y = h - (p[key] / max) * (h - 4) - 2;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+  };
+  line("g", maxG, css.getPropertyValue("--accent2"));
+  line("spin", maxSpin, css.getPropertyValue("--accent"));
+}
+(function loop() { drawChart(); requestAnimationFrame(loop); })();
+
+// ---- throws ----
+const HKEY = "disctracker.history.v1";
+function loadHistory() { try { return JSON.parse(localStorage.getItem(HKEY)) || []; } catch { return []; } }
+function saveHistory(h) { try { localStorage.setItem(HKEY, JSON.stringify(h.slice(-200))); } catch {} }
+let history = loadHistory();
+
+function chipsFor(flags) {
+  const out = [];
+  if (flags & F.GYRO_Z_SAT && !(flags & F.SPIN_FROM_ACC)) out.push("Gyro maxed – spin is a minimum");
+  if (flags & F.ACCEL_SAT) out.push("Accelerometer maxed – speed unreliable");
+  if (flags & F.NO_STATIC) out.push("Disc wasn't still before throw – angles less certain");
+  if (flags & F.NO_RELEASE) out.push("Release not detected cleanly");
+  if (flags & F.SHORT_FLIGHT) out.push("Short flight window");
+  return out;
+}
+
+let lastShown = null;
+function showResult(t, isNew) {
+  lastShown = t;
+  $("resultEmpty").classList.add("hidden");
+  $("rSpeed").textContent = fmt(t.speed, 1);
+  $("rSpin").textContent = fmt(t.spin);
+  $("rHyzer").textContent = signed(t.hyzer);
+  $("rNose").textContent = signed(t.nose);
+  $("rLaunch").textContent = signed(t.launch);
+  $("rWobble").textContent = fmt(t.wobble, 1);
+  $("resultMeta").textContent = `#${t.seq} · ${new Date(t.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` +
+    (Number.isFinite(t.peak) ? ` · peak ${t.peak.toFixed(1)} g` : "");
+  const chips = chipsFor(t.flags);
+  const SRC = { 1: "Spin from the drag-wave method (gyro maxed)", 2: "Spin from the centripetal method (gyro maxed)",
+                3: "Spin: drag-wave and centripetal methods agree (gyro maxed)" };
+  if (SRC[t.spinSrc]) chips.unshift(SRC[t.spinSrc]);
+  if (t.ccw !== undefined) chips.unshift(t.ccw ? "Spin: counter-clockwise (RH forehand / LH backhand)" : "Spin: clockwise (RH backhand / LH forehand)");
+  if (t.sens && t.sens < 5) chips.unshift(`Test reading (sensitivity ${t.sens}) – not a full throw measurement`);
+  $("rChips").innerHTML = chips.map(c => `<span class="chip">${c}</span>`).join("");
+  $("copyBtn").disabled = false;
+  $("tdBtn").disabled = false;
+  if (isNew) {
+    const card = $("resultCard");
+    card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+    if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+  }
+}
+
+function simulatorText(t) {
+  return `Speed ${fmt(t.speed, 1)} mph, Spin ${fmt(t.spin)} rpm, Hyzer ${signed(t.hyzer)}°, ` +
+         `Nose ${signed(t.nose)}°, Launch ${signed(t.launch)}°, Wobble ${fmt(t.wobble, 1)}°`;
+}
+
+// TechDisc's public simulator (techdisc.com/simulate) reads a throw from its link:
+//   v = speed (m/s), spin = rad/s (negative = clockwise from above, e.g. RH backhand),
+//   uphill_degrees = launch, hyzer_degrees, nose_up_degrees,
+//   speed / glide / turn / weight (kg) = the simulated disc. It has no wobble input.
+function techdiscUrl(t) {
+  // the disc chosen in the Simulate tab; before that tab has been set up, the first disc in the bag
+  let d = (typeof bag !== "undefined" && bag[0]) || { speed: 12, glide: 5, turn: -1 };
+  try { if ($("dSpeed").value !== "") d = readDisc(); } catch {}
+  return techdiscSimUrl(t, d);
+}
+$("tdBtn").onclick = () => { if (lastShown) window.open(techdiscUrl(lastShown), "_blank", "noopener"); };
+
+async function copyResult() {
+  if (!lastShown) return;
+  const text = simulatorText(lastShown);
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch {}
+  if (!ok) {                                  // older/embedded browsers: textarea fallback
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch {}
+    ta.remove();
+  }
+  $("copyBtn").textContent = ok ? "Copied ✓" : text;
+  setTimeout(() => { $("copyBtn").textContent = "Copy numbers for the simulator"; }, 2500);
+}
+
+function renderHistory() {
+  const body = $("histBody");
+  body.innerHTML = history.slice().reverse().map(t =>
+    `<tr class="hrow" data-key="${t.key}"><td>${t.seq}${t.sens && t.sens < 5 ? "ᵗ" : ""}</td><td>${fmt(t.speed, 1)}</td><td>${fmt(t.spin)}</td><td>${signed(t.hyzer)}</td><td>${signed(t.nose)}</td><td>${signed(t.launch)}</td><td>${fmt(t.wobble, 1)}</td><td><a class="tdLink" href="${techdiscUrl(t)}" target="_blank" rel="noopener">↗</a></td></tr>`
+  ).join("");
+  body.querySelectorAll(".hrow").forEach(r => r.onclick = e => { if (e.target.closest("a")) return; simThrowKey = r.dataset.key; showTab("sim"); });
+  $("histEmpty").classList.toggle("hidden", history.length > 0);
+  $("histTable").classList.toggle("hidden", history.length === 0);
+}
+
+function addThrow(s) {
+  if (!(s.flags & F.VALID)) return;
+  noteResultArrived(s.seq);
+  // The board resends stored throws after a reconnect. Its throw number
+  // restarts at 1 on every power-up, so pair it with the per-boot id.
+  const key = s.v === 3 ? `b${s.boot}-${s.seq}` : `${s.seq}-${s.t}`;
+  if (history.some(h => h.key === key)) return;
+  const t = { ...s, key, at: Date.now(), sens: lastStatus ? lastStatus.sens : 5 };
+  history.push(t); saveHistory(history);
+  renderHistory(); showResult(t, true);
+  showBanner("", "");                      // clear "result on its way"
+}
+
+// ---- banner: reconnecting / result pending / rejected throw ----
+function showBanner(text, kind) {
+  const b = $("banner");
+  b.textContent = text;
+  b.className = "banner" + (kind ? " " + kind : "") + (text ? "" : " hidden");
+}
+
+// ---- status channel (calibration, battery, rejected captures) ----
+const CAL = { NONE: 0, OK: 1, MOVING: 2, NOT_FLAT: 3, NO_DATA: 4 };
+let calPending = null, lastRejectKey = null, lastStatus = null;
+
+// The disc says how many throws it has counted. If that number goes up and no
+// result follows, say so - this exact failure once lost six throws silently.
+let resultsSeen = 0, watchdog = null;
+function noteResultArrived(seq) { resultsSeen = Math.max(resultsSeen, seq); clearTimeout(watchdog); watchdog = null; }
+function noteThrowCount(n) {
+  if (n < resultsSeen) resultsSeen = 0;                  // disc rebooted, numbering restarted
+  if (n > resultsSeen && !watchdog) {
+    watchdog = setTimeout(() => {
+      watchdog = null;
+      if (n > resultsSeen) showBanner(`The disc counted throw #${n} but its result hasn't arrived. Tap Disconnect, then Connect.`, "warn");
+    }, 4000);
+  }
+}
+
+const END = { 1: "hit something (net/catch)", 2: "full flight window", 3: "3 s limit – release never detected",
+              4: "a gap in the readings (samples lost)" };
+function captureInfo(st) {
+  if (!st.captures) return "No throw detected yet since the disc powered on.";
+  let txt = `Recordings since power-on: ${st.captures} · counted throws: ${st.throws}.`;
+  if (st.endReason) txt += ` Last recording ended at ${END[st.endReason] || "?"}` +
+    (st.flight10 ? ` after ${st.flight10 * 10} ms of flight` : "") + ".";
+  if (st.flight10 && st.flight10 < 15 && st.endReason === 1) txt += " That's short – stand further from the net for spin/wobble.";
+  return txt;
+}
+// Firmware v4 accept rules per sensitivity level (SENS[] in disc_tracker_v2.ino): min peak g, min spin rpm,
+// and the steady spin a release needs.
+const SENS_RULES = { 1: [1.4, 0, 0], 2: [2.0, 15, 40], 3: [2.0, 30, 100], 4: [2.0, 45, 150], 5: [2.0, 60, 150] };
+function rejectReason(st) {
+  const [minPeak, minSpin, relRpm] = SENS_RULES[st.sens] || SENS_RULES[5];
+  if (st.endReason === 4) return "some readings were lost during the recording (try again)";
+  if (st.rejectFlags & F.NO_RELEASE)
+    return relRpm ? `no release with a freely spinning disc – it needs a steady spin of at least ${relRpm} rpm right after ` +
+      "leaving the hand, and a catch or bump straight away can hide it" : "no clean release found";
+  if (st.rejectPeak <= minPeak) return `too gentle – peak ${st.rejectPeak.toFixed(1)} g, needs over ${minPeak} g`;
+  if (st.rejectSpin < minSpin) return `not enough spin – ${st.rejectSpin} rpm, needs ${minSpin}`;
+  return `peak ${st.rejectPeak.toFixed(1)} g, spin ${st.rejectSpin} rpm`;
+}
+
+function parseStatus(dv) {
+  return {
+    captures: dv.byteLength >= 20 ? dv.getUint16(14, true) : 0,
+    endReason: dv.byteLength >= 20 ? dv.getUint8(16) : 0,
+    flight10: dv.byteLength >= 20 ? dv.getUint8(17) : 0,
+    rejectFlags: dv.byteLength >= 20 ? dv.getUint8(18) : 0,
+    mode: dv.byteLength >= 20 ? dv.getUint8(19) : 0,
+    calState: dv.getUint8(1), calResult: dv.getUint8(2), battery: dv.getUint8(3),
+    tilt: dv.getInt16(4, true) / 100, saved: !!(dv.getUint8(6) & 1),
+    charging: !!(dv.getUint8(6) & 2), sens: (dv.getUint8(6) >> 3) & 7,
+    spinRadiusKnown: !!(dv.getUint8(6) & 64), spinCalRunning: !!(dv.getUint8(6) & 128),
+    lastCapture: dv.getUint8(7), throws: dv.getUint16(8, true),
+    rejectPeak: dv.getUint16(10, true) / 10, rejectSpin: dv.getUint16(12, true),
+  };
+}
+
+const MODE = { AWAKE: 0, STANDBY: 1, OFF: 2 };
+let discMode = MODE.AWAKE;
+function showPower(mode) {
+  discMode = mode;
+  const txt = { 0: "Awake", 1: "Standby – tap Wake up or pick up the disc", 2: "Turning off…" };
+  $("powerMode").textContent = txt[mode] ?? "–";
+  const on = !!cmdChar;
+  $("standbyBtn").disabled = !on || mode !== MODE.AWAKE;
+  $("wakeBtn").disabled = !on || mode !== MODE.STANDBY;
+  $("offBtn").disabled = !on || mode === MODE.OFF;
+  if (mode === MODE.STANDBY) {
+    $("state").textContent = "Standby"; $("state").className = "pill";
+    $("stage").classList.add("unsure"); $("stageLabel").textContent = "standby";
+  }
+}
+
+let spinCalWasRunning = false;
+function onStatus(st) {
+  const sc = $("spinCalState");
+  if (st.spinCalRunning) { sc.textContent = "measuring… keep it spinning"; $("spinCalBtn").disabled = true; }
+  else {
+    if (spinCalWasRunning) sc.textContent = st.spinRadiusKnown ? "✓ calibrated" : "✗ not enough steady spin – try again";
+    else sc.textContent = st.spinRadiusKnown ? "calibrated ✓" : "not learned yet";
+    $("spinCalBtn").disabled = !cmdChar;
+  }
+  spinCalWasRunning = st.spinCalRunning;
+  lastStatus = st;
+  showSens(st.sens);
+  showPower(st.mode);
+  $("captureInfo").textContent = captureInfo(st);
+  noteThrowCount(st.throws);
+  const b = $("batt");
+  if (st.battery <= 100) {
+    b.textContent = (st.charging ? "⚡ " : "🔋 ") + st.battery + "%";
+    $("battLine").innerHTML = `Battery: <b>${st.battery}%</b>${st.charging ? " · charging" : ""}`;
+    b.classList.toggle("low", st.battery < 20);
+    b.classList.remove("hidden");
+  }
+  const off = st.tilt > 90 ? 180 - st.tilt : st.tilt;
+  $("calSaved").textContent = st.saved ? `saved · chip ${st.tilt > 90 ? "down" : "up"}, ${off.toFixed(1)}° off flat` : "not calibrated yet";
+
+  if (st.calState === 1) { setCalMsg("Measuring… don't touch the disc", "busy"); return; }
+  if (calPending) {                          // the answer to our Calibrate tap
+    clearTimeout(calPending); calPending = null;
+    $("calBtn").disabled = false;
+    if (st.calResult === CAL.OK)
+      setCalMsg(`✓ Calibrated and saved. Board is chip-side ${st.tilt > 90 ? "down" : "up"}, ${off.toFixed(1)}° off flat.`, "ok");
+    else if (st.calResult === CAL.MOVING)
+      setCalMsg("✗ The disc moved. Set it down, step back, and try again.", "bad");
+    else if (st.calResult === CAL.NOT_FLAT)
+      setCalMsg(`✗ Board is ${st.tilt.toFixed(0)}° from flat. Lay the disc flat, top up – or the board is glued crooked.`, "bad");
+    else setCalMsg("✗ Calibration failed – no sensor data.", "bad");
+  }
+
+  // A capture that was not counted as a throw: say so instead of silence.
+  if (st.lastCapture === 2) {
+    const key = `${st.throws}-${st.rejectPeak}-${st.rejectSpin}`;
+    if (key !== lastRejectKey) {
+      showBanner(`Throw detected but not counted: ${rejectReason(st)}.`, "warn");
+      lastRejectKey = key;
+    }
+  }
+}
+
+function setCalMsg(text, kind) { const m = $("calMsg"); m.textContent = text; m.className = "calmsg" + (kind ? " " + kind : ""); }
+
+async function startCalibration() {
+  if (!cmdChar) return;
+  // "cal" can't tell label-up from label-down: an upside-down calibration flips hyzer, nose and spin direction.
+  if (!confirm("Is the disc lying flat with the LABEL FACING UP, and unplugged?\n\nCalibrating it label-down would make every throw read upside down.")) return;
+  $("calBtn").disabled = true;
+  for (let i = 3; i > 0; i--) { setCalMsg(`Hands off the disc… ${i}`, "busy"); await sleep(1000); }
+  if (!cmdChar) { setCalMsg("Disconnected – reconnect and try again.", "bad"); $("calBtn").disabled = false; return; }
+  setCalMsg("Measuring… don't touch the disc", "busy");
+  calPending = setTimeout(() => {
+    calPending = null; $("calBtn").disabled = false;
+    setCalMsg("No answer from the disc. Its firmware may be out of date – update it, then try again.", "bad");
+  }, 10000);
+  await sendCmd("cal");
+}
+
+// ---- Bluetooth ----
+// The disc WILL fly out of range on every real throw. The firmware keeps
+// measuring and stores the result; this page just keeps trying to reconnect
+// until the disc is back, then the stored throw arrives on its own.
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), ms))]);
+let reconnecting = false, lastLiveFlags = 0, attempts = 0;
+
+async function connect() {
+  try {
+    if (!device) {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SVC] }, { name: "DiscTracker" }],
+        optionalServices: [SVC],
+      });
+      device.addEventListener("gattserverdisconnected", onDisconnected);
+    }
+  } catch (err) {
+    if (err && err.name === "NotFoundError") { setStatus("Not connected"); return; }   // picker cancelled
+    setStatus("Failed: " + (err && err.message ? err.message : err)); return;
+  }
+  userDisconnect = false;
+  connectLoop();
+}
+
+async function connectLoop() {
+  if (reconnecting) return;
+  reconnecting = true;
+  attempts = 0;
+  $("connectBtn").textContent = "Stop";
+  while (device && !userDisconnect && !device.gatt.connected) {
+    attempts++;
+    setStatus(attempts === 1 ? "Connecting…" : `Out of range – retrying (${attempts})`, "busy");
+    try {
+      await withTimeout(setupGatt(), 12000);
+    } catch (err) {
+      console.warn("connect attempt failed:", err);
+      try { device.gatt.disconnect(); } catch {}
+      await sleep(Math.min(1000 * attempts, 3000));
+    }
+  }
+  reconnecting = false;
+  if (userDisconnect) { $("connectBtn").textContent = "Connect to disc"; setStatus("Not connected"); }
+}
+
+async function setupGatt() {
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SVC);
+
+  // Status first, so calibration/battery show up immediately. Optional: older firmware lacks it.
+  try {
+    const status = await svc.getCharacteristic(STATUS);
+    status.addEventListener("characteristicvaluechanged", e => onStatus(parseStatus(e.target.value)));
+    await status.startNotifications();
+    onStatus(parseStatus(await status.readValue()));
+  } catch (e) { console.warn("no status channel", e); }
+
+  let hasLive = true;
+  try {
+    const live = await svc.getCharacteristic(LIVE);
+    live.addEventListener("characteristicvaluechanged", e => { const s = parseLive(e.target.value); lastLiveFlags = s.flags; showLive(s); });
+    await live.startNotifications();
+  } catch (e) {
+    hasLive = false;
+    $("state").textContent = "Board firmware has no live stream – update it";
+    $("state").className = "pill clipped";
+  }
+
+  // Subscribe to results last: the disc then sends any throws it stored while we were away.
+  const summary = await svc.getCharacteristic(SUMMARY);
+  summary.addEventListener("characteristicvaluechanged", e => {
+    const t = parseSummary(e.target.value);
+    if (t) addThrow(t);
+    else showBanner(`A throw result arrived cut short (${e.target.value.byteLength} bytes). The disc needs a firmware update.`, "warn");
+  });
+  await summary.startNotifications();
+
+  try {
+    const lc = await svc.getCharacteristic(LOGINFO);
+    lc.addEventListener("characteristicvaluechanged", e => onLogInfo(e.target.value));
+    await lc.startNotifications();
+    onLogInfo(await lc.readValue());
+  } catch (e) { console.warn("no recorder channel (old firmware)", e); }
+
+  hasLogData = false;
+  try {
+    const dc = await svc.getCharacteristic(LOGDATA);
+    dc.addEventListener("characteristicvaluechanged", e => onLogData(e.target.value));
+    await dc.startNotifications();
+    hasLogData = true;
+  } catch (e) { console.warn("no download channel (old firmware)", e); }
+
+  try {
+    const fc = await svc.getCharacteristic(FIND);
+    fc.addEventListener("characteristicvaluechanged", e => onFind(e.target.value));
+    await fc.startNotifications();
+  } catch (e) { console.warn("no find channel (old firmware)", e); }
+
+  try {
+    const bc = await svc.getCharacteristic(BTSTREAM);
+    bc.addEventListener("characteristicvaluechanged", e => sim3dPacket(e.target.value));
+    await bc.startNotifications();
+  } catch (e) { console.warn("no raw stream (old firmware)", e); }
+
+  cmdChar = await svc.getCharacteristic(CMD);
+  sim3dStream();
+  $("findBtn").disabled = false;
+  $("sensBar").disabled = false;
+  $("frontBtn").disabled = false;
+  $("spinCalBtn").disabled = false;
+  if (lastLogDv) onLogInfo(lastLogDv);
+  if (dl && dl.active && dl.got < dl.total) {          // carry on an interrupted download
+    $("dlMsg").textContent = `Reconnected – continuing from ${(dl.got / 1024).toFixed(0)} KB…`;
+    await sendCmd("logread " + dl.got);
+  }
+  if (finding) {                       // the disc drops find mode on disconnect; resume it
+    await sendCmd("find");
+    if (ledOn) await sendCmd("ledon");
+    setFinding(true);
+  }
+  $("calBtn").disabled = $("clearBoard").disabled = false;
+  showPower(discMode === MODE.OFF ? MODE.AWAKE : discMode);   // it answered, so it is not off
+  if (!calPending && $("calMsg").textContent.startsWith("Connect")) setCalMsg("");
+  $("connectBtn").textContent = "Disconnect";
+  setStatus(hasLive ? (attempts > 1 ? "Reconnected" : "Connected") : "Connected (no live data)", "on");
+  if ($("banner").textContent.startsWith("Disc out of range – reconnecting")) showBanner("", "");
+  keepAwake();
+}
+
+function onDisconnected() {
+  cmdChar = null;
+  sim3dPost({ dt: "conn", state: userDisconnect ? "off" : "lost" });
+  $("calBtn").disabled = $("clearBoard").disabled = true;
+  $("standbyBtn").disabled = $("wakeBtn").disabled = $("offBtn").disabled = true;
+  $("findBtn").disabled = $("ledBtn").disabled = $("dirBtn").disabled = true;
+  $("sessBtn").disabled = $("logClearBtn").disabled = true;
+  $("dlBtn").disabled = $("dlRestartBtn").disabled = true;
+  document.querySelectorAll(".testBtn").forEach(b => b.disabled = true);
+  $("sensBar").disabled = true;
+  if (finding) $("findState").textContent = "out of range – reconnecting…";
+  if (calPending) { clearTimeout(calPending); calPending = null; setCalMsg("Disconnected during calibration – try again.", "bad"); }
+  $("stage").classList.add("unsure");
+  if (userDisconnect) { $("connectBtn").textContent = "Connect to disc"; setStatus("Not connected"); return; }
+  if (discMode === MODE.OFF) {
+    $("powerMode").textContent = "Off – flick the disc to turn it on";
+    showBanner("The disc is off. Give it a firm flick or shake to turn it on – this page reconnects by itself.", "");
+    connectLoop();
+    return;
+  }
+  if (lastLiveFlags & LIVE_CAPTURING)
+    showBanner("Disc out of range mid-throw – that's normal. Walk toward it; the result appears as soon as it reconnects.", "");
+  else
+    showBanner("Disc out of range – reconnecting automatically…", "");
+  connectLoop();
+}
+
+async function sendCmd(text) {
+  if (!cmdChar) return;
+  const data = new TextEncoder().encode(text);
+  try { await (cmdChar.writeValueWithoutResponse ? cmdChar.writeValueWithoutResponse(data) : cmdChar.writeValue(data)); }
+  catch (e) { console.error(e); }
+}
+
+async function keepAwake() {
+  try { if ("wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => wakeLock = null); } } catch {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && device?.gatt?.connected) keepAwake(); });
+
+// ---- throw detection (sensitivity bar) ----
+const SENS_TEXT = {
+  1: "Hand tests: almost any motion gives a reading (no spin or release needed). Results are marked as test readings.",
+  2: "Very sensitive: gentle tosses count.",
+  3: "Medium: soft throws count.",
+  4: "Firm throws.",
+  5: "Real throws: needs a proper snap, spin and clean release. Best for accurate numbers.",
+};
+let sensDragging = false;
+function showSens(level) {
+  if (!level) return;
+  if (!sensDragging) $("sensBar").value = level;
+  $("sensNote").textContent = `level ${level}${level === 1 ? " · test mode" : ""}`;
+  $("sensDesc").textContent = SENS_TEXT[level] || "";
+}
+$("sensBar").addEventListener("input", () => { sensDragging = true; showSens(+$("sensBar").value); });
+$("sensBar").addEventListener("change", () => { sensDragging = false; sendCmd("sens " + $("sensBar").value); });
+showSens(5);
+
+// ---- find my disc ----
+// The disc measures the phone's signal (RSSI) ~60x/s and sends the median of
+// each quarter second, 10x/s. Here: smoothing, trend, distance from a
+// calibrated path-loss model, and direction from a body-shield turn.
+const FKEY = "disctracker.findcal.v1";
+const DEFAULT_MODEL = { A: -55, n: 2.5, calibrated: false };   // A = RSSI at 1 m, n = path-loss exponent
+let model = (() => { try { return JSON.parse(localStorage.getItem(FKEY)) || DEFAULT_MODEL; } catch { return DEFAULT_MODEL; } })();
+let finding = false, ledOn = false, beeps = false;
+let smooth = null, lastRaw = null, lastFindAt = 0;
+const fhist = [];                       // {t, v} smoothed, last ~4 s
+let peakRssi = null;
+
+function onFind(dv) {
+  const med = dv.getInt8(1);
+  lastRaw = med; lastFindAt = performance.now();
+  smooth = smooth === null ? med : smooth + 0.3 * (med - smooth);
+  const t = performance.now();
+  fhist.push({ t, v: smooth });
+  while (fhist.length && t - fhist[0].t > 4000) fhist.shift();
+  if (scan) scanSample(med);
+  renderFind();
+}
+
+function rssiPct(r) { return Math.max(0, Math.min(1, (r + 95) / 55)); }   // -95 dBm -> 0, -40 dBm -> 1
+function wordFor(p) { return p < .25 ? "Cold" : p < .5 ? "Cool" : p < .7 ? "Warm" : p < .85 ? "Hot" : "Right here!"; }
+function estDistance(r) { return Math.pow(10, (model.A - r) / (10 * model.n)); }
+function fmtM(d) { return d < 10 ? d.toFixed(1) : Math.round(d).toString(); }
+
+function trendDbPerS() {
+  const pts = fhist.filter(p => performance.now() - p.t < 2000);
+  if (pts.length < 6) return 0;
+  const n = pts.length, mt = pts.reduce((a, p) => a + p.t, 0) / n, mv = pts.reduce((a, p) => a + p.v, 0) / n;
+  let num = 0, den = 0;
+  for (const p of pts) { num += (p.t - mt) * (p.v - mv); den += (p.t - mt) ** 2; }
+  return den ? num / den * 1000 : 0;
+}
+
+function renderFind() {
+  if (smooth === null) return;
+  const p = rssiPct(smooth);
+  $("meterFill").style.width = (p * 100).toFixed(0) + "%";
+  if (peakRssi !== null) { $("meterPeak").classList.remove("hidden"); $("meterPeak").style.left = `calc(${(rssiPct(peakRssi) * 100).toFixed(1)}% - 1px)`; }
+  $("findWord").textContent = wordFor(p);
+  const s = trendDbPerS(), tr = $("trend");
+  if (s > 0.8) { tr.textContent = "↑ warmer"; tr.className = "trend up"; }
+  else if (s < -0.8) { tr.textContent = "↓ colder"; tr.className = "trend down"; }
+  else { tr.textContent = "→ steady"; tr.className = "trend flat"; }
+  $("rssiText").textContent = `${smooth.toFixed(0)} dBm`;
+  const d = estDistance(smooth);
+  // ~4 dB of typical scatter -> about x1.5 either way at n = 2.5
+  const k = Math.pow(10, 4 / (10 * model.n));
+  $("findDist").textContent = d < 1 ? "Distance: within about 1 m" :
+    `Distance: ≈ ${fmtM(d)} m (${fmtM(Math.max(0.5, d / k))}–${fmtM(d * k)} m)` + (model.calibrated ? "" : " · rough – calibrate below");
+  if (dirTarget !== null) renderArrow();
+}
+
+function setFinding(on) {
+  finding = on;
+  $("findBtn").textContent = on ? "Stop finding" : "Start finding";
+  $("findBtn").classList.toggle("on", on);
+  $("findState").textContent = on ? "finding…" : "off";
+  $("ledBtn").disabled = !on || !cmdChar;
+  $("dirBtn").disabled = !on || !cmdChar;
+  if (!on) { smooth = null; fhist.length = 0; stopBeeps(); if (ledOn) toggleLed(false); }
+  else if (beeps) startBeeps();
+  updateCalButtons();
+}
+$("findBtn").onclick = () => {
+  if (!cmdChar) return;
+  if (finding) { sendCmd("findstop"); setFinding(false); }
+  else { sendCmd("find"); setFinding(true); }
+};
+function toggleLed(on) {
+  ledOn = on;
+  $("ledBtn").textContent = on ? "Stop LED" : "Flash LED";
+  $("ledBtn").classList.toggle("on", on);
+  sendCmd(on ? "ledon" : "ledoff");
+}
+$("ledBtn").onclick = () => toggleLed(!ledOn);
+
+// Geiger-style ticks: faster when warmer, so you can watch the grass, not the screen.
+let audioCtx = null, beepTimer = null;
+function tick() {
+  if (!audioCtx || smooth === null) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.frequency.value = 600 + 900 * rssiPct(smooth);
+  g.gain.setValueAtTime(0.25, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.06);
+  o.connect(g).connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + 0.07);
+}
+function scheduleBeep() {
+  const p = smooth === null ? 0 : rssiPct(smooth);
+  beepTimer = setTimeout(() => { tick(); scheduleBeep(); }, 1100 - 950 * p);
+}
+function startBeeps() { if (!beepTimer && finding) scheduleBeep(); }
+function stopBeeps() { clearTimeout(beepTimer); beepTimer = null; }
+$("beepBtn").onclick = () => {
+  beeps = !beeps;
+  $("beepBtn").textContent = "Beeps: " + (beeps ? "on" : "off");
+  $("beepBtn").classList.toggle("on", beeps);
+  if (beeps) { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); startBeeps(); }
+  else stopBeeps();
+};
+
+// ---- direction: body-shield turn ----
+// Your body blocks 2.4 GHz strongly. Phone flat against the chest, turn a
+// full circle: the signal peaks when you face the disc. With a compass the
+// page turns that into an arrow; without one it marks the peak on the meter.
+let heading = null, compassOk = false, scan = null, dirTarget = null;
+function onOrient(e) {
+  if (typeof e.webkitCompassHeading === "number") heading = e.webkitCompassHeading;          // iOS
+  else if (e.absolute && typeof e.alpha === "number") heading = (360 - e.alpha) % 360;      // Android
+  else return;
+  compassOk = true;
+  if (dirTarget !== null) renderArrow();
+}
+async function enableCompass() {
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function")
+      await DeviceOrientationEvent.requestPermission();
+  } catch {}
+  window.addEventListener("deviceorientation", onOrient);
+  window.addEventListener("deviceorientationabsolute", onOrient);
+  await sleep(700);
+  return compassOk;
+}
+
+$("dirBtn").onclick = async () => {
+  if (!finding) return;
+  $("dirBtn").disabled = true;
+  const hasCompass = compassOk || await enableCompass();
+  dirTarget = null; $("dirArrow").classList.add("hidden");
+  peakRssi = null; $("meterPeak").classList.add("hidden");
+  scan = { samples: [], start: performance.now(), hasCompass, bins: new Set() };
+  $("dirMsg").innerHTML = "Hold the phone <b>flat against your chest</b>, screen up. <b>Turn slowly in a full circle</b> (about 15 s).";
+  const t0 = performance.now();
+  while (scan && performance.now() - t0 < 22000) {
+    await sleep(250);
+    const secs = Math.round((performance.now() - t0) / 1000);
+    if (hasCompass) {
+      const pct = Math.round(scan.bins.size / 24 * 100);
+      $("dirMsg").innerHTML = `Keep turning slowly… <b>${Math.min(100, pct)}%</b> of the circle (${secs} s)`;
+      if (scan.bins.size >= 21 && secs >= 8) break;          // ~315 deg covered
+    } else {
+      $("dirMsg").innerHTML = `Keep turning slowly… ${secs} s of ~15`;
+      if (secs >= 15) break;
+    }
+  }
+  finishScan();
+  $("dirBtn").disabled = !finding;
+  $("dirBtn").textContent = "Scan again";
+};
+
+function scanSample(rssi) {
+  const s = { t: performance.now() - scan.start, rssi, h: heading };
+  scan.samples.push(s);
+  if (scan.hasCompass && heading !== null) scan.bins.add(Math.floor(heading / 15) % 24);
+}
+
+function finishScan() {
+  const sc = scan; scan = null;
+  if (!sc || sc.samples.length < 20) { $("dirMsg").textContent = "Not enough signal readings – stay connected and try again."; return; }
+  const all = sc.samples.map(s => s.rssi).sort((a, b) => a - b);
+  const med = all[Math.floor(all.length / 2)];
+  if (sc.hasCompass) {
+    // median per 15 deg bin, smoothed 1-2-1 around the circle, then peak
+    const bins = Array.from({ length: 24 }, () => []);
+    sc.samples.forEach(s => { if (s.h !== null) bins[Math.floor(s.h / 15) % 24].push(s.rssi); });
+    const m = bins.map(b => b.length ? b.slice().sort((a, b2) => a - b2)[Math.floor(b.length / 2)] : null);
+    const sm = m.map((v, i) => {
+      const nb = [[m[(i + 23) % 24], 1], [v, 2], [m[(i + 1) % 24], 1]].filter(x => x[0] !== null);
+      return nb.length ? nb.reduce((a, x) => a + x[0] * x[1], 0) / nb.reduce((a, x) => a + x[1], 0) : null;
+    });
+    let best = -1;
+    sm.forEach((v, i) => { if (v !== null && (best < 0 || v > sm[best])) best = i; });
+    // refine: weighted circular mean of the peak and its neighbours
+    let sx = 0, sy = 0;
+    const lo = Math.min(...sm.filter(v => v !== null));
+    for (let k = -2; k <= 2; k++) {
+      const i = (best + k + 24) % 24; if (sm[i] === null) continue;
+      const w = sm[i] - lo + 0.1, ang = (i * 15 + 7.5) * Math.PI / 180;
+      sx += w * Math.sin(ang); sy += w * Math.cos(ang);
+    }
+    dirTarget = (Math.atan2(sx, sy) * 180 / Math.PI + 360) % 360;
+    peakRssi = sm[best];
+    dirConfidence(sm[best] - med);
+    $("dirArrow").classList.remove("hidden");
+    renderArrow();
+  } else {
+    // no compass: when in the turn was it strongest? mark it on the meter
+    const sm = sc.samples.map((s, i, a) => {
+      const w = a.slice(Math.max(0, i - 3), i + 4).map(x => x.rssi).sort((x, y) => x - y);
+      return { t: s.t, v: w[Math.floor(w.length / 2)] };
+    });
+    const best = sm.reduce((a, b) => b.v > a.v ? b : a);
+    peakRssi = best.v;
+    const frac = Math.round(best.t / sc.samples[sc.samples.length - 1].t * 100);
+    $("dirMsg").innerHTML = `Strongest about <b>${frac}%</b> of the way through your turn. ` +
+      `Turn back slowly with the phone on your chest and <b>stop when the meter reaches the white line</b> – that's the way.` +
+      confidenceNote(best.v - med);
+  }
+  renderFind();
+}
+
+function confidenceNote(db) {
+  if (db >= 8) return " <i>(strong direction)</i>";
+  if (db >= 4) return " <i>(fair direction)</i>";
+  return " <i>(weak – very close, very far, or blocked. Walk ~10 m and scan again.)</i>";
+}
+function dirConfidence(db) { scanConf = confidenceNote(db); }
+let scanConf = "";
+
+function renderArrow() {
+  if (dirTarget === null || heading === null) return;
+  const rel = ((dirTarget - heading + 540) % 360) - 180;          // -180..180, + = to the right
+  $("dirArrow").style.transform = `rotate(${rel}deg)`;
+  const a = Math.abs(rel);
+  $("dirMsg").innerHTML = (a < 20 ? "<b>Straight ahead</b> – walk this way."
+    : `Turn <b>${rel > 0 ? "right" : "left"} ${Math.round(a / 5) * 5}°</b>`) +
+    (smooth !== null ? ` · ${$("findDist").textContent.replace("Distance: ", "")}` : "") + scanConf +
+    "<br><span class='note'>Re-scan every 10–20 m – it gets sharper as you close in.</span>";
+}
+
+// ---- distance calibration ----
+const CAL_DISTS = [1, 2, 4, 8, 15];
+const calPts = {};                     // d -> median rssi
+function updateCalButtons() {
+  document.querySelectorAll(".calRec").forEach(b => b.disabled = !finding);
+  $("calSave").disabled = Object.keys(calPts).length < 3;
+}
+function renderCalRows() {
+  $("calRows").innerHTML = CAL_DISTS.map(d =>
+    `<div class="calRow"><span class="d">${d} m</span><span class="r" id="calr${d}">${calPts[d] !== undefined ? calPts[d].toFixed(0) + " dBm" : "–"}</span>` +
+    `<button class="calRec" data-d="${d}" ${finding ? "" : "disabled"}>Record</button></div>`).join("");
+  document.querySelectorAll(".calRec").forEach(b => b.onclick = () => recordCal(+b.dataset.d, b));
+  updateCalButtons();
+  $("calFit").textContent = model.calibrated
+    ? `Calibrated: ${model.A.toFixed(0)} dBm at 1 m, falloff ${model.n.toFixed(2)} (fit ±${(model.rms ?? 0).toFixed(1)} dB).`
+    : "Not calibrated – distances use a rough default.";
+}
+async function recordCal(d, btn) {
+  btn.disabled = true;
+  const vals = [];
+  for (let i = 5; i > 0; i--) {
+    $("calr" + d).textContent = `hold still… ${i}`;
+    const t = performance.now();
+    while (performance.now() - t < 1000) { await sleep(100); if (lastRaw !== null && performance.now() - lastFindAt < 300) vals.push(lastRaw); }
+  }
+  if (vals.length < 10) { $("calr" + d).textContent = "no signal – is finding on?"; btn.disabled = false; return; }
+  vals.sort((a, b) => a - b);
+  calPts[d] = vals[Math.floor(vals.length / 2)];
+  renderCalRows();
+}
+$("calSave").onclick = () => {
+  // least squares: rssi = A - 10 n log10(d)
+  const pts = Object.entries(calPts).map(([d, r]) => ({ x: Math.log10(+d), y: r }));
+  const n = pts.length, mx = pts.reduce((a, p) => a + p.x, 0) / n, my = pts.reduce((a, p) => a + p.y, 0) / n;
+  let sxy = 0, sxx = 0; pts.forEach(p => { sxy += (p.x - mx) * (p.y - my); sxx += (p.x - mx) ** 2; });
+  const slope = sxy / sxx;
+  let pn = -slope / 10, A = my - slope * mx, note = "";
+  if (!(pn >= 1.4 && pn <= 5)) { note = " Readings didn't fall off with distance as expected – clamped. Re-record in an open area."; pn = Math.max(1.4, Math.min(5, pn || 2.5)); A = my + 10 * pn * mx; }
+  const rms = Math.sqrt(pts.reduce((a, p) => a + (p.y - (A - 10 * pn * p.x)) ** 2, 0) / n);
+  model = { A, n: pn, rms, calibrated: true };
+  try { localStorage.setItem(FKEY, JSON.stringify(model)); } catch {}
+  renderCalRows();
+  $("calFit").textContent += note;
+  renderFind();
+};
+$("calReset").onclick = () => {
+  Object.keys(calPts).forEach(k => delete calPts[k]);
+  model = DEFAULT_MODEL;
+  try { localStorage.removeItem(FKEY); } catch {}
+  renderCalRows();
+};
+renderCalRows();
+
+// Flight model (TUNE, v3, simulateFlight): flight.js, shared with sim.html.
+
+// ---- simulate tab UI ----
+const BKEY = "disctracker.bag.v1", SKEY = "disctracker.simdefaults.v1";
+const DEFAULT_BAG = [
+  { name: "Distance driver", speed: 12, glide: 5, turn: -1, fade: 3 },
+  { name: "Fairway driver", speed: 7, glide: 5, turn: 0, fade: 2 },
+  { name: "Midrange", speed: 5, glide: 5, turn: 0, fade: 1 },
+  { name: "Putter", speed: 2, glide: 3, turn: 0, fade: 1 },
+  { name: "Understable driver", speed: 9, glide: 5, turn: -3, fade: 1 },
+];
+const loadJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const saveJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+let bag = loadJSON(BKEY, DEFAULT_BAG);
+let simThrowKey = null, lastFlight = null, ghostFlight = null, animId = null;
+
+const STYLES = { rhbh: ["Right-hand backhand", false], lhfh: ["Left-hand forehand", false],
+                 rhfh: ["Right-hand forehand", true], lhbh: ["Left-hand backhand", true] };   // [label, ccw]
+
+function renderBag(selectName) {
+  $("bagSel").innerHTML = bag.map((b, i) => `<option value="${i}">${b.name} (${b.speed}/${b.glide}/${b.turn}/${b.fade})</option>`).join("") +
+    `<option value="new">+ New disc…</option>`;
+  const i = bag.findIndex(b => b.name === selectName);
+  $("bagSel").value = i >= 0 ? i : 0;
+  fillDisc(bag[+$("bagSel").value] || bag[0]);
+}
+function fillDisc(b) { if (!b) return; $("dName").value = b.name; $("dSpeed").value = b.speed; $("dGlide").value = b.glide; $("dTurn").value = b.turn; $("dFade").value = b.fade; }
+function readDisc() {
+  const num = (id, lo, hi) => Math.max(lo, Math.min(hi, parseFloat($(id).value) || 0));
+  return { name: $("dName").value.trim() || "Disc", speed: num("dSpeed", 1, 15), glide: num("dGlide", 1, 7), turn: num("dTurn", -5, 2), fade: num("dFade", 0, 6) };
+}
+$("bagSel").onchange = () => { const v = $("bagSel").value; if (v === "new") { fillDisc({ name: "", speed: 9, glide: 5, turn: -1, fade: 2 }); $("dName").focus(); } else fillDisc(bag[+v]); };
+$("bagSave").onclick = () => {
+  const d = readDisc(); const i = bag.findIndex(b => b.name.toLowerCase() === d.name.toLowerCase());
+  if (i >= 0) bag[i] = d; else bag.push(d);
+  saveJSON(BKEY, bag); renderBag(d.name);
+};
+$("bagDel").onclick = () => {
+  const v = $("bagSel").value; if (v === "new" || bag.length <= 1) return;
+  if (!confirm(`Remove ${bag[+v].name} from your bag?`)) return;
+  bag.splice(+v, 1); saveJSON(BKEY, bag); renderBag();
+};
+
+function renderSimSources() {
+  const opts = history.slice().reverse().map(t =>
+    `<option value="${t.key}">#${t.seq}${t.sens && t.sens < 5 ? " (test)" : ""} · ${fmt(t.speed, 1)} mph · ${new Date(t.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</option>`);
+  $("simSource").innerHTML = opts.join("") + `<option value="custom">Custom numbers</option>`;
+  $("simSource").value = simThrowKey && history.some(h => h.key === simThrowKey) ? simThrowKey : (history.length ? history[history.length - 1].key : "custom");
+  loadSimThrow();
+}
+function loadSimThrow() {
+  const key = $("simSource").value, t = history.find(h => h.key === key);
+  simThrowKey = t ? key : null;
+  const defs = loadJSON(SKEY, {});
+  const src = t || defs.custom || { speed: 55, spin: 900, hyzer: 0, nose: 0, launch: 10, wobble: 2 };
+  [["sSpeed", "speed"], ["sSpin", "spin"], ["sHyzer", "hyzer"], ["sNose", "nose"], ["sLaunch", "launch"], ["sWobble", "wobble"]]
+    .forEach(([id, k]) => { $(id).value = Number.isFinite(src[k]) ? Math.round(src[k] * 10) / 10 : ""; });
+  const sim = (t && t.sim) || defs;
+  // throw style: saved choice for this throw, else match the measured spin direction to the usual hand
+  let style = sim.style || defs.style || "rhbh";
+  if (t && t.ccw !== undefined && STYLES[style][1] !== t.ccw) style = t.ccw ? (style[0] === "r" ? "rhfh" : "lhbh") : (style[0] === "r" ? "rhbh" : "lhfh");
+  $("simStyle").value = style;
+  $("spinNote").textContent = t && t.ccw !== undefined
+    ? `Disc measured: ${t.ccw ? "counter-clockwise" : "clockwise"} spin (from above).` : "";
+  renderBag(sim.disc ? sim.disc.name : (defs.disc && defs.disc.name));
+  if (sim.disc) fillDisc(sim.disc);
+  $("windMph").value = sim.windMph ?? 0; $("windFrom").value = sim.windFrom ?? 0; $("relHeight").value = sim.heightFt ?? 4;
+  [...document.querySelectorAll(".windBtn")].forEach(b => b.classList.toggle("on", +b.dataset.from === +$("windFrom").value));
+}
+$("simSource").onchange = loadSimThrow;
+document.querySelectorAll(".windBtn").forEach(b => b.onclick = () => {
+  $("windFrom").value = b.dataset.from;
+  document.querySelectorAll(".windBtn").forEach(x => x.classList.toggle("on", x === b));
+});
+
+function readSim() {
+  const n = id => parseFloat($(id).value);
+  return {
+    speedMph: Math.max(5, n("sSpeed") || 0), spinRpm: Math.max(0, n("sSpin") || 0), hyzer: n("sHyzer") || 0,
+    nose: n("sNose") || 0, launch: n("sLaunch") || 0, wobble: n("sWobble") || 0,
+    style: $("simStyle").value, ccw: STYLES[$("simStyle").value][1], disc: readDisc(),
+    windMph: Math.max(0, n("windMph") || 0), windFrom: ((n("windFrom") || 0) % 360 + 360) % 360,
+    heightFt: Math.max(0, n("relHeight") || 4),
+  };
+}
+
+$("simBtn").onclick = () => {
+  const p = readSim();
+  const saved = { style: p.style, disc: p.disc, windMph: p.windMph, windFrom: p.windFrom, heightFt: p.heightFt };
+  if (simThrowKey) {                              // remember these inputs with this throw
+    const t = history.find(h => h.key === simThrowKey);
+    if (t) { t.sim = saved; saveHistory(history); }
+  }
+  saveJSON(SKEY, { ...saved, custom: simThrowKey ? undefined : { speed: p.speedMph, spin: p.spinRpm, hyzer: p.hyzer, nose: p.nose, launch: p.launch, wobble: p.wobble } });
+  if (lastFlight) ghostFlight = lastFlight;
+  lastFlight = { ...simulateFlight(p), label: `${p.disc.name}, ${fmt(p.speedMph)} mph` };
+  const r = lastFlight;
+  $("simDist").textContent = Math.round(r.distFt);
+  $("simLat").textContent = Math.abs(r.lateralFt) < 1 ? "0" : `${Math.round(Math.abs(r.lateralFt))} ${r.lateralFt > 0 ? "L" : "R"}`;
+  $("simHigh").textContent = Math.round(r.maxHFt);
+  $("simTime").textContent = r.timeS.toFixed(1);
+  $("simResult").classList.remove("hidden");
+  animateFlight();
+  $("simResult").scrollIntoView({ behavior: "smooth", block: "start" });
+};
+$("simReplay").onclick = () => lastFlight && animateFlight();
+
+function animateFlight() {
+  cancelAnimationFrame(animId);
+  const start = performance.now(), speedUp = 1.5, total = lastFlight.timeS;
+  const step = () => {
+    const tt = Math.min(total, (performance.now() - start) / 1000 * speedUp);
+    drawFlight(tt);
+    if (tt < total) animId = requestAnimationFrame(step);
+  };
+  step();
+}
+
+function drawFlight(tt) {
+  const fl = lastFlight, gh = ghostFlight;
+  const flights = [fl, gh].filter(Boolean);
+  const maxX = Math.max(100, ...flights.flatMap(f => f.path.map(p => p.x))) * 1.08;
+  const maxY = Math.max(40, ...flights.flatMap(f => f.path.map(p => Math.abs(p.y)))) * 1.2;
+  const maxZ = Math.max(20, ...flights.flatMap(f => f.path.map(p => p.z))) * 1.2;
+  const css = getComputedStyle(document.documentElement);
+  const col = { line: css.getPropertyValue("--line"), muted: css.getPropertyValue("--muted"), acc: css.getPropertyValue("--accent"), acc2: css.getPropertyValue("--accent2") };
+
+  // top view: throw line runs bottom -> top, left of the line is screen-left
+  {
+    const c = $("simTop"), ctx = c.getContext("2d"), dpr = window.devicePixelRatio || 1;
+    const W = c.clientWidth, H = c.clientHeight;
+    c.width = W * dpr; c.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    const pad = 22, sx = (W / 2 - pad) / maxY, sy = (H - 2 * pad) / maxX, k = Math.min(sx, sy);
+    const X = y => W / 2 - y * k, Y = x => H - pad - x * k;
+    ctx.font = "11px system-ui"; ctx.fillStyle = col.muted; ctx.strokeStyle = col.line; ctx.lineWidth = 1;
+    const stepFt = maxX > 400 ? 100 : 50;
+    for (let ft = stepFt; ft < maxX; ft += stepFt) { ctx.beginPath(); ctx.moveTo(0, Y(ft)); ctx.lineTo(W, Y(ft)); ctx.stroke(); ctx.fillText(ft + " ft", 4, Y(ft) - 3); }
+    ctx.setLineDash([4, 5]); ctx.beginPath(); ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(0), Y(maxX)); ctx.stroke(); ctx.setLineDash([]);
+    const trace = (f, color, upto, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+      f.path.forEach((p, i) => { if (p.t > upto) return; i ? ctx.lineTo(X(p.y), Y(p.x)) : ctx.moveTo(X(p.y), Y(p.x)); });
+      ctx.stroke();
+    };
+    if (gh) trace(gh, col.muted, Infinity, 2);
+    trace(fl, col.acc, tt, 3);
+    const cur = fl.path.filter(p => p.t <= tt).pop() || fl.path[0];
+    ctx.fillStyle = col.acc2; ctx.beginPath(); ctx.arc(X(cur.y), Y(cur.x), 6, 0, 7); ctx.fill();
+    ctx.fillStyle = col.muted; ctx.fillText("top view", W - 58, H - 6);
+  }
+  // side view: distance left -> right, height up
+  {
+    const c = $("simSide"), ctx = c.getContext("2d"), dpr = window.devicePixelRatio || 1;
+    const W = c.clientWidth, H = c.clientHeight;
+    c.width = W * dpr; c.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    const pad = 18, kx = (W - 2 * pad) / maxX, kz = (H - 2 * pad) / maxZ;
+    const X = x => pad + x * kx, Z = z => H - pad - z * kz;
+    ctx.strokeStyle = col.line; ctx.beginPath(); ctx.moveTo(0, Z(0)); ctx.lineTo(W, Z(0)); ctx.stroke();
+    ctx.font = "11px system-ui"; ctx.fillStyle = col.muted; ctx.fillText(Math.round(maxZ / 1.2) + " ft high", 4, 12);
+    const trace = (f, color, upto, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+      f.path.forEach((p, i) => { if (p.t > upto) return; i ? ctx.lineTo(X(p.x), Z(p.z)) : ctx.moveTo(X(p.x), Z(p.z)); });
+      ctx.stroke();
+    };
+    if (gh) trace(gh, col.muted, Infinity, 2);
+    trace(fl, col.acc, tt, 3);
+    const cur = fl.path.filter(p => p.t <= tt).pop() || fl.path[0];
+    ctx.fillStyle = col.acc2; ctx.beginPath(); ctx.arc(X(cur.x), Z(cur.z), 5, 0, 7); ctx.fill();
+    ctx.fillStyle = col.muted; ctx.fillText("side view", W - 60, H - 4);
+  }
+  $("simLegend").textContent = ghostFlight ? `green: ${fl.label} · grey: previous (${ghostFlight.label})` : fl.label;
+}
+
+// ---- tabs ----
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("hidden", t.id !== "tab-" + name));
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  try { localStorage.setItem("disctracker.tab", name); } catch {}
+  if (name === "sim") { renderSimSources(); if (lastFlight) drawFlight(lastFlight.timeS); sim3dOpen(); }
+  sim3dStream();
+  if (name === "rec") requestAnimationFrame(drawRec);
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+// ---- the 3D simulator tab: disc3d.html inside a frame, fed from this page's connection ----
+// The disc sends every reading only while the tab is open ("bton"); its throws are then not saved to the disc's
+// own memory, so the stream stops ("btoff") as soon as another tab is chosen.
+let sim3dReady = false, sim3dOn = false;
+const sim3dFrame = () => $("sim3d");
+function sim3dPost(m, transfer) { const f = sim3dFrame(); if (f && sim3dReady) f.contentWindow.postMessage(m, location.origin, transfer || []); }
+function sim3dOpen() {
+  if (!sim3dFrame()) {
+    const f = document.createElement("iframe");
+    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-10-27d"; f.allow = "fullscreen";
+    $("sim3dWrap").appendChild(f);
+  }
+  sizeSim3d();
+}
+function sizeSim3d() {
+  const f = sim3dFrame(); if (!f || $("tab-sim").classList.contains("hidden")) return;
+  f.style.height = Math.max(420, Math.round(innerHeight - f.getBoundingClientRect().top - 12 + scrollY)) + "px";
+}
+addEventListener("resize", sizeSim3d);
+function sim3dCfg() {
+  const w = +$("windMph").value || 0;
+  $("simOptsSum").textContent = `${$("dName").value || "Disc"} ${$("dSpeed").value}/${$("dGlide").value}/${$("dTurn").value}/${$("dFade").value}` +
+    (w ? ` · wind ${w} mph from ${$("windFrom").value}°` : " · no wind");
+  return { dt: "sim", disc: { name: $("dName").value || "Disc", speed: +$("dSpeed").value || 12, glide: +$("dGlide").value || 5,
+    turn: +$("dTurn").value || 0, fade: +$("dFade").value || 0 }, windMph: +$("windMph").value || 0, windFrom: +$("windFrom").value || 0, heightFt: +$("relHeight").value || 0 };
+}
+function sim3dStream() {
+  const want = !!cmdChar && !$("tab-sim").classList.contains("hidden");
+  if (want !== sim3dOn && cmdChar) { sim3dOn = want; sendCmd(want ? "bton" : "btoff"); }
+  if (!cmdChar) sim3dOn = false;
+  sim3dPost({ dt: "conn", state: cmdChar ? "on" : device ? "lost" : "off" });
+}
+function sim3dPacket(v) {
+  if (!sim3dOn || !sim3dReady) return;
+  const buf = v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
+  sim3dPost({ dt: "pkt", buf }, [buf]);
+}
+addEventListener("message", e => {
+  if (e.origin !== location.origin || !e.data || e.source !== (sim3dFrame() || {}).contentWindow) return;
+  if (e.data.dt === "ready") { sim3dReady = true; $("sim3dWait").hidden = true; sim3dPost(sim3dCfg()); sim3dStream(); sizeSim3d(); }
+  else if (e.data.dt === "cmd" && typeof e.data.text === "string") sendCmd(e.data.text);
+});
+$("tab-sim").addEventListener("input", () => sim3dPost(sim3dCfg()));
+$("tab-sim").addEventListener("click", e => { if (e.target.closest(".windBtn, #bagSel")) setTimeout(() => sim3dPost(sim3dCfg()), 0); });
+$("tab-sim").addEventListener("change", () => sim3dPost(sim3dCfg()));
+$("simOpts").addEventListener("toggle", () => sizeSim3d());
+sim3dCfg();
+addEventListener("pagehide", () => { if (sim3dOn && cmdChar) sendCmd("btoff"); });
+
+// ---- buttons light up when pressed ----
+document.addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b || b.disabled) return;
+  b.classList.remove("pressed"); void b.offsetWidth; b.classList.add("pressed");
+  setTimeout(() => b.classList.remove("pressed"), 500);
+}, true);
+
+// ---- data recorder ----
+let sessionOn = false;
+let lastLogDv = null;
+const KB_PER_S = 5.4;                         // 416 readings/s x 12 bytes + record headers
+const TEST_NAMES = { 1: "Drop", 2: "Throw into net", 3: "Real throw", 4: "Hand spin / flick", 5: "Other" };
+function fmtTime(s) { return s >= 60 ? `${Math.floor(s / 60)} min ${String(Math.floor(s % 60)).padStart(2, "0")} s` : `${Math.round(s)} s`; }
+function onLogInfo(dv) {
+  lastLogDv = dv;
+  const fl = dv.getUint8(1), rec = dv.getUint16(2, true), used = dv.getUint16(4, true), cap = dv.getUint16(6, true) || 2048;
+  const secs = dv.getUint16(8, true), mark = dv.byteLength > 10 ? dv.getUint8(10) : 0;
+  const ok = !!(fl & 1), full = !!(fl & 4) || !!(fl & 8);
+  sessionOn = !!(fl & 2);
+  const pct = Math.min(100, used / cap * 100), left = Math.max(0, (cap - used - 16) / KB_PER_S);
+  $("logFill").style.width = pct.toFixed(1) + "%";
+  $("logFill").style.background = full ? "var(--bad)" : sessionOn ? "var(--warn)" : "var(--accent2)";
+  $("recCard").classList.toggle("full", ok && full);
+  $("logState").textContent = !ok ? "not available" : full ? "FULL – move the data off" : sessionOn ? `● recording ${fmtTime(secs)}` : "ready";
+  $("logInfo").innerHTML = !ok ? "Recorder chip not found (old firmware?)."
+    : full ? `<b>Memory full – recording stopped.</b> ${used} of ${cap} KB, ${rec} records. Plug into the computer and run <code>py disclab.py export --clear</code>.`
+    : `${used} of ${cap} KB used (${pct.toFixed(0)}%) · about <b>${fmtTime(left)}</b> of full recording left`;
+  $("sessBtn").textContent = sessionOn ? "■ Stop recording" : full ? "Memory full – move the data off first" : "● Record all sensor data";
+  $("sessBtn").classList.toggle("on", sessionOn);
+  $("sessBtn").disabled = !cmdChar || !ok || (full && !sessionOn);
+  $("logClearBtn").disabled = !cmdChar || !ok;
+  document.querySelectorAll(".testBtn").forEach(b => {
+    b.disabled = !cmdChar || !ok || full;
+    b.classList.toggle("on", +b.dataset.mark === mark);
+  });
+  discLog = { ok, used, cap, rec, full, sessionOn };
+  updateDlCard();
+  if (pendingRestart && ok && used < 64 && !full) { pendingRestart = false; sendCmd("streamon"); $("dlMsg").textContent = "Disc erased – a new full recording has started."; }
+  if (mark) $("markMsg").textContent = `Labeled as: ${TEST_NAMES[mark] || mark}. Everything recorded from now on belongs to this test.`;
+}
+$("sessBtn").onclick = () => sendCmd(sessionOn ? "streamoff" : "streamon");
+document.querySelectorAll(".testBtn").forEach(b => b.onclick = () => sendCmd("mark " + b.dataset.mark));
+$("logClearBtn").onclick = () => {
+  if (confirm("Erase the whole recording WITHOUT saving it?\n\nTo keep it, use 'py disclab.py export --clear' on the computer instead.")) sendCmd("logclear");
+};
+
+// ---- recordings: download over BLE, keep on the phone, view, export ----
+let hasLogData = false, dl = null, discLog = null, pendingRestart = false, lastVerified = null;
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+
+function updateDlCard() {
+  const conn = !!cmdChar;
+  if (!discLog) { $("dlDiscInfo").textContent = "–"; $("dlBtn").disabled = true; return; }
+  $("dlDiscInfo").textContent = discLog.ok ? `on disc: ${discLog.used} KB · ${discLog.rec} records` : "recorder not available";
+  const busy = dl && dl.active;
+  $("dlBtn").disabled = !conn || !hasLogData || !discLog.ok || busy || discLog.used === 0;
+  if (!hasLogData && conn) $("dlMsg").textContent = "This disc needs the new firmware for phone downloads.";
+  // erase only when the exact contents on the disc were downloaded, checked and saved
+  const safe = lastVerified && Math.abs(lastVerified.usedKB - discLog.used) <= 1 && lastVerified.records === discLog.rec;
+  $("dlRestartBtn").disabled = !conn || busy || !safe;
+}
+
+$("dlBtn").onclick = async () => {
+  if (discLog && discLog.sessionOn && !confirm("The disc is recording right now. Stop the recording and download it?")) return;
+  dl = { active: true, total: 0, got: 0, buf: null, crc: 0, records: 0, t0: performance.now(), gotAtStart: 0 };
+  $("dlFill").style.width = "0%"; $("dlMsg").textContent = "Starting…";
+  updateDlCard();
+  await sendCmd("logread 0");
+};
+
+function onLogData(dv) {
+  if (!dl || !dl.active) return;
+  const off = dv.getUint32(0, true);
+  if (off === 0xFFFFFFFF) {                              // start packet
+    const total = dv.getUint32(4, true), records = dv.getUint32(8, true), crc = dv.getUint32(12, true);
+    if (!dl.buf || dl.total !== total || dl.crc !== crc) { dl.buf = new Uint8Array(total); dl.got = 0; }
+    Object.assign(dl, { total, records, crc, t0: performance.now(), gotAtStart: dl.got });
+    if (total === 0) { dl.active = false; $("dlMsg").textContent = "The disc has nothing recorded."; updateDlCard(); }
+    return;
+  }
+  if (off === 0xFFFFFFFE) { finishDownload(); return; }
+  if (!dl.buf || off !== dl.got) return;                 // only accept the next bytes in order
+  const n = dv.byteLength - 4;
+  dl.buf.set(new Uint8Array(dv.buffer, dv.byteOffset + 4, Math.min(n, dl.total - off)), off);
+  dl.got = off + n;
+  const now = performance.now();
+  if (!dl.lastUi || now - dl.lastUi > 250) {
+    dl.lastUi = now;
+    const rate = (dl.got - dl.gotAtStart) / Math.max(0.5, (now - dl.t0) / 1000);
+    const left = (dl.total - dl.got) / Math.max(rate, 1);
+    $("dlFill").style.width = (dl.got / dl.total * 100).toFixed(1) + "%";
+    $("dlMsg").textContent = `${(dl.got / 1024).toFixed(0)} of ${(dl.total / 1024).toFixed(0)} KB · ${(rate / 1024).toFixed(1)} KB/s · about ${fmtTime(left)} left`;
+  }
+}
+
+async function finishDownload() {
+  dl.active = false;
+  if (dl.got < dl.total) { $("dlMsg").textContent = `Download ended early (${dl.got} of ${dl.total} bytes). Tap Download to try again.`; updateDlCard(); return; }
+  const ok = crc32(dl.buf) === dl.crc;
+  if (!ok) { $("dlMsg").textContent = "✗ Check failed – the data was damaged in transfer. Tap Download to try again. Nothing was erased."; updateDlCard(); return; }
+  $("dlFill").style.width = "100%";
+  const recs = parseLog(dl.buf);
+  const info = summarize(recs);
+  const item = { date: Date.now(), bytes: dl.buf.buffer, size: dl.total, records: dl.records, crc: dl.crc, info };
+  try {
+    const id = await dbPut(item);
+    lastVerified = { usedKB: Math.floor(dl.total / 1024), records: dl.records };
+    $("dlMsg").innerHTML = `✓ Checked and saved on this phone (${(dl.total / 1024).toFixed(0)} KB, ${fmtTime(info.durationS)} of data, ${info.captures} captures).`;
+    await renderRecList(id);
+  } catch (e) {
+    console.error(e);
+    $("dlMsg").textContent = "✗ Couldn't save on this phone (storage full?). Nothing was erased.";
+  }
+  dl = null;
+  updateDlCard();
+}
+
+$("dlRestartBtn").onclick = () => {
+  if (!confirm("Erase the disc and start a new full recording?\n\nThe last download is safely saved on this phone.")) return;
+  pendingRestart = true; lastVerified = null;
+  $("dlMsg").textContent = "Erasing the disc (up to ~25 s)…";
+  sendCmd("logclear");
+  updateDlCard();
+};
+$("goRecBtn").onclick = () => { showTab("rec"); window.scrollTo(0, 0); };
+
+// -- parse the disc's binary log (same layout as flash_log.h LogHeader) --
+const END_NAMES = { 1: "impact", 2: "flight window full", 3: "3 s limit" };
+const SRC_NAMES = { 0: "gyro", 1: "drag wave", 2: "centripetal", 3: "wave+centripetal" };
+const FLAG_NAMES = [[2, "gyro maxed"], [4, "accel maxed"], [8, "no release"], [16, "no still moment"], [32, "spin from accel"], [64, "short flight"], [128, "counter-clockwise"]];
+function parseLog(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), recs = [];
+  let off = 0;
+  while (off + 256 <= u8.byteLength && dv.getUint32(off, true) === 0x474F4C44) {
+    const f = i => dv.getFloat32(off + i, true);
+    const r = {
+      type: dv.getUint16(off + 6, true), length: dv.getUint32(off + 8, true), no: dv.getUint32(off + 12, true),
+      boot: dv.getUint16(off + 16, true), sens: dv.getUint8(off + 18), end: dv.getUint8(off + 19), tMs: dv.getUint32(off + 20, true),
+      n: dv.getUint16(off + 24, true), odr: dv.getUint16(off + 26, true) || 416, rel: dv.getUint16(off + 28, true),
+      counted: dv.getUint8(off + 32), src: dv.getUint8(off + 33), flags: dv.getUint16(off + 34, true),
+      ver: dv.getUint16(off + 4, true),
+      speed: f(36), spin: f(40), hyzer: f(44), nose: f(48), launch: f(52), wobble: f(56), peak: f(60),
+      bias: [f(76), f(80), f(84)], R: Array.from({ length: 9 }, (_, k) => f(88 + 4 * k)), alsb: f(152) || 0.000488, glsb: f(156) || 0.070, sampleOff: off + 256,
+    };
+    if (r.length < 256) break;
+    if (r.ver < 2) r.wobble = wobbleFromRateAngle(r.wobble);   // older firmware: ~2x, converted
+    recs.push(r);
+    off += r.length;
+  }
+  // one timeline: seconds since the first record (a reboot continues 1 s after the last record)
+  let base = 0, prevBoot = null, prevT = 0, t0 = recs.length ? recs[0].tMs : 0, test = 0;
+  for (const r of recs) {
+    if (prevBoot !== null && r.boot !== prevBoot) { base = prevT + 1; t0 = r.tMs; }
+    if (r.type === 3) test = r.end;
+    r.test = test;
+    const tEnd = base + (r.tMs - t0) / 1000;
+    r.t = r.type === 1 ? tEnd - (r.n - 1) / r.odr : tEnd;        // captures store their END time
+    prevT = r.t + r.n / r.odr; prevBoot = r.boot;
+    r.u8 = u8;
+  }
+  return recs;
+}
+function sample(r, i) {
+  const dv = new DataView(r.u8.buffer, r.u8.byteOffset + r.sampleOff + i * 12, 12);
+  return [dv.getInt16(0, true) * r.glsb - r.bias[0], dv.getInt16(2, true) * r.glsb - r.bias[1], dv.getInt16(4, true) * r.glsb - r.bias[2],
+          dv.getInt16(6, true) * r.alsb, dv.getInt16(8, true) * r.alsb, dv.getInt16(10, true) * r.alsb, Math.abs(dv.getInt16(4, true)) >= 32200];
+}
+function summarize(recs) {
+  const streams = recs.filter(r => r.type === 2), caps = recs.filter(r => r.type === 1);
+  const tests = [...new Set(recs.filter(r => r.type === 3).map(r => TEST_NAMES[r.end] || r.end))];
+  const last = recs[recs.length - 1];
+  return {
+    durationS: last ? last.t + last.n / last.odr : 0,
+    streamS: streams.reduce((a, r) => a + r.n / r.odr, 0),
+    captures: caps.length, counted: caps.filter(r => r.counted).length, tests,
+  };
+}
+const flagText = f => FLAG_NAMES.filter(([b]) => f & b).map(([, n]) => n).join("; ");
+
+// -- IndexedDB: recordings stay on the phone until deleted --
+function db() {
+  return new Promise((res, rej) => {
+    const q = indexedDB.open("disctracker", 1);
+    q.onupgradeneeded = () => q.result.createObjectStore("recordings", { keyPath: "id", autoIncrement: true });
+    q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+  });
+}
+async function dbDo(mode, fn) {
+  const d = await db();
+  return new Promise((res, rej) => {
+    const tx = d.transaction("recordings", mode), q = fn(tx.objectStore("recordings"));
+    tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error);
+  });
+}
+const dbPut = item => dbDo("readwrite", st => st.add(item));
+const dbAll = () => dbDo("readonly", st => st.getAll());
+const dbGet = id => dbDo("readonly", st => st.get(id));
+const dbDel = id => dbDo("readwrite", st => st.delete(id));
+
+let view = null;      // { id, item, recs, v0, v1, selCap }
+const fmtDate = ms => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+async function renderRecList(selectId) {
+  let items = [];
+  try { items = await dbAll(); } catch (e) { console.warn(e); }
+  $("recCount").textContent = items.length ? `${items.length} saved` : "";
+  $("recEmpty").classList.toggle("hidden", items.length > 0);
+  const list = $("recList"); list.innerHTML = "";
+  items.sort((a, b) => b.date - a.date).forEach((it, k) => {
+    const b = document.createElement("button");
+    b.textContent = `${fmtDate(it.date)} · ${fmtTime(it.info.durationS)}`;
+    b.onclick = () => openRec(it.id);
+    b.dataset.id = it.id;
+    list.appendChild(b);
+  });
+  const want = selectId ?? (view && view.id) ?? (items[0] && items.sort((a, b) => b.date - a.date)[0].id);
+  if (want != null && items.some(i => i.id === want)) openRec(want); else { view = null; $("recView").classList.add("hidden"); }
+}
+async function openRec(id) {
+  const item = await dbGet(id);
+  if (!item) return;
+  const recs = parseLog(new Uint8Array(item.bytes));
+  const info = summarize(recs);
+  view = { id, item, recs, v0: 0, v1: Math.max(1, info.durationS), selCap: null };
+  document.querySelectorAll("#recList button").forEach(b => b.classList.toggle("on", +b.dataset.id === id));
+  $("recView").classList.remove("hidden");
+  $("recSummary").innerHTML = `<b>${fmtDate(item.date)}</b> · ${fmtTime(info.durationS)} total · ` +
+    `${fmtTime(info.streamS)} of full recording · ${info.captures} captures (${info.counted} counted as throws)` +
+    (info.tests.length ? ` · tests: ${info.tests.join(", ")}` : "") + ` · ${(item.size / 1024).toFixed(0)} KB`;
+  const caps = recs.filter(r => r.type === 1);
+  $("capTable").innerHTML = `<thead><tr><th>#</th><th>time</th><th>test</th><th>counted</th><th>mph</th><th>rpm</th><th>hyzer</th><th>nose</th><th>launch</th><th>peak g</th><th>notes</th><th>TD</th></tr></thead><tbody>` +
+    caps.map(r => `<tr data-no="${r.no}"><td>${r.no}</td><td>${r.t.toFixed(1)} s</td><td>${TEST_NAMES[r.test] || ""}</td><td>${r.counted ? "yes" : "no"}</td>` +
+      `<td>${r.speed.toFixed(1)}</td><td>${r.spin.toFixed(0)}</td><td>${r.hyzer.toFixed(1)}</td><td>${r.nose.toFixed(1)}</td><td>${r.launch.toFixed(1)}</td>` +
+      `<td>${r.peak.toFixed(1)}</td><td>${flagText(r.flags)}</td>` +
+      `<td><a class="tdLink" target="_blank" rel="noopener" href="${techdiscUrl({ speed: r.speed, spin: r.spin, launch: r.launch, hyzer: r.hyzer, nose: r.nose, ccw: !!(r.flags & 128) })}">↗</a></td></tr>`).join("") + `</tbody>`;
+  if (!caps.length) $("capTable").innerHTML = `<tbody><tr><td>No captures in this recording.</td></tr></tbody>`;
+  $("capTable").querySelectorAll("tbody tr[data-no]").forEach(tr => tr.onclick = e => {
+    if (e.target.closest("a")) return;
+    const r = caps.find(c => c.no === +tr.dataset.no);
+    view.selCap = r.no; view.v0 = r.t - 0.5; view.v1 = r.t + r.n / r.odr + 0.5;
+    $("capTable").querySelectorAll("tr").forEach(x => x.classList.toggle("sel", x === tr));
+    drawRec();
+  });
+  drawRec();
+}
+
+function drawRec() {
+  if (!view) return;
+  const cv = $("recChart"), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (!W) return;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+  const css = getComputedStyle(document.documentElement);
+  const C = k => css.getPropertyValue(k).trim();
+  const { recs, v0, v1 } = view, span = v1 - v0, L = 40, R = W - 6, top = [6, H / 2 + 4], ph = H / 2 - 18;
+  const X = t => L + (t - v0) / span * (R - L);
+  // capture shading + test markers
+  for (const r of recs) {
+    if (r.type === 1) {
+      const a = X(r.t), b = X(r.t + r.n / r.odr);
+      if (b < L || a > R) continue;
+      ctx.fillStyle = r.counted ? "rgba(60,200,120,.18)" : "rgba(140,140,140,.18)";
+      ctx.fillRect(Math.max(L, a), 0, Math.min(R, b) - Math.max(L, a), H);
+    } else if (r.type === 3) {
+      const x = X(r.t); if (x < L || x > R) continue;
+      ctx.strokeStyle = C("--warn"); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      ctx.fillStyle = C("--warn"); ctx.font = "11px system-ui"; ctx.fillText(TEST_NAMES[r.end] || r.end, x + 3, 12);
+    }
+  }
+  // min/max per pixel column from the continuous recording, or captures if there is none
+  const src = recs.filter(r => r.type === 1 || r.type === 2);     // overlapping data is identical, so drawing both is fine
+  const cols = Math.max(1, Math.floor(R - L));
+  const gMin = new Float32Array(cols).fill(Infinity), gMax = new Float32Array(cols).fill(-Infinity);
+  const sMin = new Float32Array(cols).fill(Infinity), sMax = new Float32Array(cols).fill(-Infinity);
+  let gTop = 2, sTop = 100;
+  for (const r of src) {
+    const tA = r.t, tB = r.t + r.n / r.odr;
+    if (tB < v0 || tA > v1) continue;
+    const i0 = Math.max(0, Math.floor((v0 - tA) * r.odr)), i1 = Math.min(r.n, Math.ceil((v1 - tA) * r.odr) + 1);
+    const step = Math.max(1, Math.floor((i1 - i0) / (cols * 4)));
+    for (let i = i0; i < i1; i += step) {
+      const t = tA + i / r.odr, c = Math.floor((t - v0) / span * cols);
+      if (c < 0 || c >= cols) continue;
+      const sm = sample(r, i), g = Math.hypot(sm[3], sm[4], sm[5]), rpm = Math.abs(sm[2]) / 6;
+      if (g < gMin[c]) gMin[c] = g; if (g > gMax[c]) gMax[c] = g;
+      if (rpm < sMin[c]) sMin[c] = rpm; if (rpm > sMax[c]) sMax[c] = rpm;
+      if (g > gTop) gTop = g; if (rpm > sTop) sTop = rpm;
+    }
+  }
+  gTop = Math.ceil(gTop); sTop = Math.ceil(sTop / 50) * 50;
+  const pane = (k, mn, mx, top0, maxV, color, label) => {
+    ctx.strokeStyle = C("--line"); ctx.lineWidth = 1; ctx.strokeRect(L, top0, R - L, ph);
+    ctx.fillStyle = C("--muted"); ctx.font = "10px system-ui";
+    ctx.fillText(maxV.toFixed(0), 2, top0 + 9); ctx.fillText("0", 2, top0 + ph); ctx.fillText(label, L + 4, top0 + ph - 4);
+    ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath();
+    for (let c = 0; c < cols; c++) {
+      if (mn[c] === Infinity) continue;
+      const x = L + c + 0.5, y1 = top0 + ph - mx[c] / maxV * ph, y2 = top0 + ph - mn[c] / maxV * ph;
+      ctx.moveTo(x, y1); ctx.lineTo(x, Math.max(y2, y1 + 1));
+    }
+    ctx.stroke();
+  };
+  pane(0, gMin, gMax, top[0], gTop, C("--accent"), "force (g)");
+  pane(1, sMin, sMax, top[1], sTop, C("--accent2"), "spin (rpm, gyro)");
+  ctx.fillStyle = C("--muted"); ctx.font = "10px system-ui";
+  ctx.fillText(`${v0.toFixed(1)} s`, L, H - 2); const e = `${v1.toFixed(1)} s`; ctx.fillText(e, R - ctx.measureText(e).width, H - 2);
+}
+function zoom(f, center) {
+  if (!view) return;
+  const total = view.recs.length ? summarize(view.recs).durationS : 1;
+  const c = center ?? (view.v0 + view.v1) / 2, half = Math.max(0.05, (view.v1 - view.v0) * f / 2);
+  view.v0 = Math.max(-0.5, c - half); view.v1 = Math.min(total + 0.5, c + half); drawRec();
+}
+$("zoomAll").onclick = () => { if (view) { view.v0 = 0; view.v1 = Math.max(1, summarize(view.recs).durationS); drawRec(); } };
+$("zoomIn").onclick = () => zoom(0.5);
+$("zoomOut").onclick = () => zoom(2);
+$("panL").onclick = () => { if (view) { const d = (view.v1 - view.v0) * 0.4; view.v0 -= d; view.v1 -= d; drawRec(); } };
+$("panR").onclick = () => { if (view) { const d = (view.v1 - view.v0) * 0.4; view.v0 += d; view.v1 += d; drawRec(); } };
+$("recChart").addEventListener("click", e => {
+  if (!view) return;
+  const r = $("recChart").getBoundingClientRect(), L = 40, Rx = r.width - 6;
+  zoom(0.5, view.v0 + (e.clientX - r.left - L) / (Rx - L) * (view.v1 - view.v0));
+});
+window.addEventListener("resize", () => { if (!$("tab-rec").classList.contains("hidden")) drawRec(); });
+
+// -- export --
+const isPhone = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+async function saveFile(name, parts, type) {
+  const blob = new Blob(parts, { type });
+  if (isPhone && navigator.canShare) {
+    const file = new File([blob], name, { type });
+    if (navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === "AbortError") return; }
+    }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+}
+const stamp = ms => { const d = new Date(ms), p = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`; };
+$("csvAllBtn").onclick = () => {
+  if (!view) return;
+  const streams = view.recs.filter(r => r.type === 2), useCaps = !streams.length;
+  const src = useCaps ? view.recs.filter(r => r.type === 1) : streams;
+  const parts = ["time_s,test,from,gyro_x_dps,gyro_y_dps,gyro_z_dps,spin_rpm,accel_x_g,accel_y_g,accel_z_g,accel_total_g,gyro_maxed\n"];
+  for (const r of src) {
+    const from = r.type === 1 ? `capture ${r.no}` : "recording", test = TEST_NAMES[r.test] || "";
+    let chunk = "";
+    for (let i = 0; i < r.n; i++) {
+      const s = sample(r, i);
+      chunk += `${(r.t + i / r.odr).toFixed(4)},${test},${from},${s[0].toFixed(2)},${s[1].toFixed(2)},${s[2].toFixed(2)},${(s[2] / 6).toFixed(1)},` +
+               `${s[3].toFixed(4)},${s[4].toFixed(4)},${s[5].toFixed(4)},${Math.hypot(s[3], s[4], s[5]).toFixed(4)},${s[6] ? 1 : 0}\n`;
+    }
+    parts.push(chunk);
+  }
+  saveFile(`disc_readings_${stamp(view.item.date)}.csv`, parts, "text/csv");
+};
+// Raw sensor counts exactly as the chip sends them over I2C (16-bit integers, 416 per second).
+// The disc stores them rotated into disc axes (stored = R * raw), so undo it: raw = R^T * stored.
+// Exact to +-1 count (rounding); a clipped sample stays clipped.
+function rawCounts(r, i) {
+  const dv = new DataView(r.u8.buffer, r.u8.byteOffset + r.sampleOff + i * 12, 12), R = r.R;
+  const st = [0, 1, 2, 3, 4, 5].map(k => dv.getInt16(k * 2, true));
+  const isId = R.every((v, k) => Math.abs(v - (k % 4 === 0 ? 1 : 0)) < 1e-6) || R.every(v => v === 0);
+  if (isId) return st;
+  const back = (x, y, z) => [0, 1, 2].map(c => {
+    const v = Math.round(R[c] * x + R[3 + c] * y + R[6 + c] * z);
+    return Math.max(-32768, Math.min(32767, v));
+  });
+  return [...back(st[0], st[1], st[2]), ...back(st[3], st[4], st[5])];
+}
+$("csvRawBtn").onclick = () => {
+  if (!view) return;
+  const streams = view.recs.filter(r => r.type === 2);
+  const src = streams.length ? streams : view.recs.filter(r => r.type === 1);
+  const parts = ["sample,time_s,test,from,gx (x0.070 = deg/s),gy (x0.070 = deg/s),gz (x0.070 = deg/s)," +
+                 "ax (x0.000488 = g),ay (x0.000488 = g),az (x0.000488 = g)\n"];
+  let k = 0;
+  for (const r of src) {
+    const from = r.type === 1 ? `capture ${r.no}` : "recording", test = TEST_NAMES[r.test] || "";
+    let chunk = "";
+    for (let i = 0; i < r.n; i++, k++) chunk += `${k},${(r.t + i / r.odr).toFixed(4)},${test},${from},${rawCounts(r, i).join(",")}\n`;
+    parts.push(chunk);
+  }
+  saveFile(`disc_raw_counts_${stamp(view.item.date)}.csv`, parts, "text/csv");
+};
+$("csvThrowBtn").onclick = () => {
+  if (!view) return;
+  const rows = ["no,time_s,test,counted,end,flight_ms,peak_g,speed_mph,spin_rpm,spin_source,hyzer_deg,nose_deg,launch_deg,wobble_deg,flags,sensitivity"];
+  for (const r of view.recs.filter(r => r.type === 1)) {
+    const flight = r.rel < r.n ? Math.round((r.n - r.rel) * 1000 / r.odr) : 0;
+    rows.push([r.no, r.t.toFixed(2), TEST_NAMES[r.test] || "", r.counted ? "yes" : "no", END_NAMES[r.end] || "", flight, r.peak.toFixed(2),
+      r.speed.toFixed(2), r.spin.toFixed(0), SRC_NAMES[r.src] || "", r.hyzer.toFixed(1), r.nose.toFixed(1), r.launch.toFixed(1),
+      r.wobble.toFixed(1), `"${flagText(r.flags)}"`, r.sens].join(","));
+  }
+  saveFile(`disc_throws_${stamp(view.item.date)}.csv`, [rows.join("\n") + "\n"], "text/csv");
+};
+$("binBtn").onclick = () => { if (view) saveFile(`disc_log_${stamp(view.item.date)}.bin`, [view.item.bytes], "application/octet-stream"); };
+$("recDelBtn").onclick = async () => {
+  if (!view || !confirm("Delete this recording from this phone? (It can't be undone.)")) return;
+  await dbDel(view.id); view = null; renderRecList();
+};
+renderRecList();
+
+// ---- set front (USB-C) ----
+// Tip the disc so the USB-C port points down: gravity's "up" then leans toward
+// the port in disc axes, and its horizontal direction IS the front.
+$("frontBtn").onclick = () => {
+  if (upHist.length < 5) { alert("No live data yet - connect first."); return; }
+  if (!confirm("Tip the disc so the USB-C port points DOWN toward the floor (about 30–60°), hold it still, then press OK.")) return;
+  const m = upHist.reduce((a, u) => [a[0] + u[0], a[1] + u[1], a[2] + u[2]], [0, 0, 0]).map(v => v / upHist.length);
+  const h = Math.hypot(m[0], m[1]);
+  if (h < 0.34) { alert("Not tipped enough - tip the USB-C side down at least 20° and try again."); return; }
+  frontDeg = Math.atan2(m[1], m[0]) * 180 / Math.PI;
+  try { localStorage.setItem(FRONT_KEY, String(frontDeg)); } catch {}
+  alert("Front set: the USB-C port is now the front of the disc in the live view.");
+};
+
+// ---- export throws for verification against reference instruments ----
+function exportCSV() {
+  const head = ["throw", "date", "time", "speed_mph", "spin_rpm", "hyzer_deg", "nose_deg", "launch_deg", "wobble_deg",
+                "peak_g", "spin_dir", "sensitivity", "flags",
+                "ref_speed_mph", "ref_spin_rpm", "ref_hyzer_deg", "ref_nose_deg", "ref_launch_deg", "ref_method", "notes"];
+  const rows = history.map(t => {
+    const d = new Date(t.at);
+    return [t.seq, d.toLocaleDateString(), d.toLocaleTimeString(), fmt(t.speed, 1), fmt(t.spin), fmt(t.hyzer, 1), fmt(t.nose, 1),
+            fmt(t.launch, 1), fmt(t.wobble, 1), fmt(t.peak, 1), t.ccw === undefined ? "" : (t.ccw ? "ccw" : "cw"),
+            t.sens ?? "", t.flags, "", "", "", "", "", "", ""].join(",");
+  });
+  const csv = head.join(",") + "\n" + rows.join("\n") + "\n";
+  const name = `disctracker-throws-${new Date().toISOString().slice(0, 10)}.csv`;
+  try {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  } catch {
+    navigator.clipboard?.writeText(csv).then(() => alert("Copied the CSV to the clipboard."), () => {});
+  }
+}
+
+// ---- wiring ----
+$("connectBtn").onclick = () => {
+  if (!navigator.bluetooth) { $("unsupported").classList.remove("hidden"); return; }
+  if (device && (device.gatt.connected || reconnecting)) {    // Disconnect / Stop retrying
+    userDisconnect = true;
+    showBanner("", "");
+    try { device.gatt.disconnect(); } catch {}
+    $("connectBtn").textContent = "Connect to disc"; setStatus("Not connected");
+    return;
+  }
+  connect();
+};
+$("calBtn").onclick = startCalibration;
+$("copyBtn").onclick = copyResult;
+$("spinCalBtn").onclick = () => { sendCmd("spincal"); $("spinCalState").textContent = "starting… spin it now"; };
+$("exportBtn").onclick = exportCSV;
+$("standbyBtn").onclick = () => sendCmd("standby");
+$("wakeBtn").onclick = () => sendCmd("wake");
+$("offBtn").onclick = () => {
+  if (confirm("Turn the disc off?\n\nIt can't hear Bluetooth while off. To turn it back on, give it a firm flick or shake.")) {
+    discMode = MODE.OFF;
+    sendCmd("off");
+  }
+};
+$("clearBoard").onclick = () => { if (confirm("Erase the throws stored on the disc?")) sendCmd("clear"); };
+$("clearLocal").onclick = () => { if (confirm("Clear the throw history on this phone?")) { history = []; saveHistory(history); renderHistory(); } };
+
+if (!navigator.bluetooth) { $("unsupported").classList.remove("hidden"); $("connectBtn").disabled = true; }
+renderHistory();
+if (history.length) showResult(history[history.length - 1], false);
+showTab((() => { try { return localStorage.getItem("disctracker.tab") || "throw"; } catch { return "throw"; } })());
+</script>
+</body>
+</html>

@@ -1,0 +1,2680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DiscTracker Sim</title>
+<meta name="description" content="Big-screen disc golf simulator: connects to the DiscTracker disc over Bluetooth and flies every throw automatically.">
+<style>
+  :root {
+    --hud: rgba(11, 15, 21, 0.74); --hud2: rgba(11, 15, 21, 0.55); --line: rgba(255, 255, 255, 0.14);
+    --text: #f3f6fa; --muted: #a7b2c0; --accent: #ff8a1f; --good: #34d399; --bad: #f87171; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0b0f14; color: var(--text); overflow: hidden;
+               font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #stage { position: fixed; inset: 0; display: flex; }
+  #view { flex: 1 1 100%; min-width: 0; height: 100%; display: block; }
+  #tdFrame { flex: 1 1 50%; min-width: 0; height: 100%; border: 0; background: #14181e; display: none; }
+  body.mode-split #view { flex-basis: 50%; }
+  body.mode-split #tdFrame { display: block; border-left: 2px solid #000; }
+  body.mode-techdisc #view { display: none; }
+  body.mode-techdisc #tdFrame { display: block; flex-basis: 100%; }
+  body.mode-techdisc #stats, body.mode-techdisc #centerMsg, body.mode-techdisc #flightInfo { display: none; }
+  body.mode-split #stats { right: calc(50% + 12px); grid-template-columns: 1.25fr repeat(3, minmax(0, 1fr)); gap: 6px; }
+  body.mode-split #stats .tile.big { grid-row: span 2; }
+  body.mode-split .tile { padding: 6px 10px; }
+  body.mode-split .tile .v { font-size: clamp(18px, 1.7vw, 30px); }
+  body.mode-split .tile.big .v { font-size: clamp(34px, 3.6vw, 64px); }
+  body.mode-split .tile:not(.big) .s { display: none; }
+  body.mode-split #welcome .card { margin-right: 50%; }
+  body.mode-split #session { display: none; }
+
+  button, select, input { font: inherit; color: var(--text); }
+  button { background: var(--hud); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; cursor: pointer; }
+  button:hover { border-color: rgba(255, 255, 255, 0.4); }
+  button.primary { background: var(--accent); color: #1c0e00; border-color: transparent; font-weight: 700; }
+  button.small { padding: 5px 10px; font-size: 13px; }
+  select, input { background: #1a212b; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  input[type=number] { width: 72px; }
+  a { color: #9fd3ff; }
+
+  header#top { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-items: center; pointer-events: none; z-index: 4; }
+  header#top > * { pointer-events: auto; }
+  .brand { background: var(--hud); border: 1px solid var(--line); border-radius: 12px; padding: 7px 14px; font-weight: 800; letter-spacing: .02em; }
+  .brand span { color: var(--accent); }
+  .pill { display: inline-flex; gap: 8px; align-items: center; background: var(--hud); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; cursor: pointer; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #6b7280; }
+  .pill.on .dot { background: var(--good); box-shadow: 0 0 10px var(--good); }
+  .pill.busy .dot { background: var(--warn); }
+  .pill.bad .dot { background: var(--bad); }
+  .spacer { flex: 1; }
+  .pill.rec .dot { background: #ef4444; box-shadow: 0 0 10px #ef4444; animation: recblink 1.2s steps(2, start) infinite; }
+  @keyframes recblink { to { visibility: hidden; } }
+  .labels { display: flex; flex-wrap: wrap; gap: 6px; }
+  #livePage { position: fixed; top: calc(var(--top, 52px) + 8px); left: 12px; right: 12px; bottom: 12px; display: none; z-index: 3; gap: 10px;
+              grid-template-columns: minmax(0, 1fr) 380px; grid-template-rows: minmax(0, 1.1fr) minmax(0, 1fr); }
+  body.mode-live #livePage { display: grid; }
+  body.mode-live #view, body.mode-live #stats, body.mode-live #session, body.mode-live #flightInfo,
+  body.mode-live #centerMsg { display: none; }
+  .lp-card { background: rgba(14, 19, 27, 0.97); border: 1px solid var(--line); border-radius: 14px; padding: 8px 10px;
+             min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+  .lp-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .lp-bar b { color: var(--text); font-size: 14px; }
+  .cvwrap { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; }
+  .cvwrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #lpSide, #lpLog { overflow: auto; }
+  .lg-dist { font-size: 22px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .lg-sim { flex: 0 0 90px; margin-bottom: 4px; }
+  .lg-form { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 5px 6px; align-items: end; }
+  .lg-form > * { grid-column: span 6; }
+  .lg-form > .q { grid-column: span 3; }
+  .lg-form > .n8 { grid-column: span 8; }
+  .lg-form > button { grid-column: span 4; }
+  .lg-form label { display: flex; flex-direction: column; gap: 1px; font-size: 11.5px; color: var(--muted); }
+  .lg-form input, .lg-form select { padding: 3px 6px; font-size: 13px; width: 100%; }
+  #lpLog .row { margin: 5px 0 0; }
+  #lpSide h3 { margin: 10px 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  #lpSide h3:first-child { margin-top: 2px; }
+  .lp-break-body { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 0.62fr); grid-template-rows: minmax(0, 1fr);
+                   gap: 10px; min-height: 0; }
+  #lpSteps { margin: 0; padding-left: 20px; overflow: auto; font-size: 12.5px; line-height: 1.45; color: #d6dde6; }
+  #lpSteps li { margin: 4px 0; }
+  #lpSteps li b { color: var(--text); }
+  .kv { display: grid; grid-template-columns: auto 1fr 1fr; gap: 1px 10px; font-variant-numeric: tabular-nums; font-size: 13px; align-items: baseline; }
+  .kv .h { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .kv .r { text-align: right; }
+  .calc { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .calc .v { text-align: right; font-weight: 700; }
+  .calc .why { grid-column: span 2; color: var(--muted); font-size: 11.5px; margin: -2px 0 4px; }
+  .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  #lpWait { position: absolute; inset: 40px 10px 10px; display: flex; align-items: center; justify-content: center; text-align: center;
+            color: var(--muted); font-size: 15px; pointer-events: none; }
+  .labels button { flex: 1 1 30%; }
+
+  #stats { position: fixed; left: 12px; right: 12px; bottom: 12px; display: grid; gap: 8px; z-index: 3;
+           grid-template-columns: minmax(230px, 1.5fr) repeat(6, minmax(0, 1fr)); }
+  .tile { background: var(--hud); border: 1px solid var(--line); border-radius: 14px; padding: 9px 14px; min-width: 0; }
+  .tile .k { font-size: 12px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  .tile .v { font-size: clamp(22px, 2.5vw, 44px); font-weight: 750; font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap; }
+  .tile .u { font-size: 0.45em; color: var(--muted); font-weight: 600; margin-left: 3px; }
+  .tile .s { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile.big .v { font-size: clamp(44px, 5.4vw, 96px); color: var(--accent); }
+
+  #flightInfo { position: fixed; left: 12px; top: calc(var(--top, 52px) + 12px); background: var(--hud2); border: 1px solid var(--line); border-radius: 12px;
+                padding: 8px 12px; font-size: 13px; color: var(--muted); z-index: 2; max-width: 46%; }
+  #flightInfo b { color: var(--text); }
+
+  #gameHud { position: fixed; left: 12px; top: calc(var(--top, 52px) + 12px); z-index: 3; width: 372px; font-size: 13px;
+             background: var(--hud); border: 1px solid var(--line); border-radius: 14px; padding: 9px 12px; }
+  #gameHud.hidden, body.mode-techdisc #gameHud, body.mode-live #gameHud { display: none; }
+  #gameHud .gh-top { display: flex; gap: 8px; align-items: baseline; }
+  #gameHud .gh-top b { font-size: 18px; color: var(--accent); }
+  #gameHud .gh-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  #ghState { margin-top: 3px; font-size: 14px; }
+  #ghCard { display: grid; gap: 2px; margin-top: 8px; text-align: center; font-variant-numeric: tabular-nums; font-size: 12px; }
+  #ghCard span { padding: 1px 0; border-radius: 4px; }
+  #ghCard .h { color: var(--muted); font-size: 11px; }
+  #ghCard .cur { outline: 1px solid var(--accent); }
+  #ghCard .under { background: rgba(52, 211, 153, 0.28); }
+  #ghCard .over { background: rgba(248, 113, 113, 0.24); }
+  html.game #flightInfo { display: none; }
+  #session { position: fixed; top: calc(var(--top, 52px) + 12px); right: 12px; width: 300px; max-height: calc(100% - var(--top, 52px) - 162px); overflow: auto;
+             background: var(--hud); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; z-index: 2; }
+  #session.hidden { display: none; }
+  #session h3, #panel h3 { margin: 2px 0 8px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  #sessSummary { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  #sessList { list-style: none; margin: 0; padding: 0; }
+  #sessList li { display: grid; grid-template-columns: 34px 1fr auto; gap: 6px; align-items: baseline; padding: 6px 4px; border-top: 1px solid var(--line); cursor: pointer; }
+  #sessList li:hover { background: rgba(255, 255, 255, 0.05); }
+  #sessList li.sel { background: rgba(255, 138, 31, 0.16); }
+  #sessList .n { color: var(--muted); font-size: 12px; }
+  #sessList .d { font-weight: 750; font-size: 18px; font-variant-numeric: tabular-nums; }
+  #sessList .m { color: var(--muted); font-size: 12px; display: block; font-weight: 400; }
+  #sessList a { text-decoration: none; font-size: 12px; }
+  .best { color: var(--accent); }
+  .tag { font-size: 10px; border: 1px solid var(--line); border-radius: 6px; padding: 0 4px; color: var(--muted); margin-left: 4px; }
+
+  #panel { position: fixed; top: calc(var(--top, 52px) + 12px); right: 12px; width: 380px; max-height: calc(100% - var(--top, 52px) - 24px); overflow: auto; z-index: 5;
+           background: rgba(11, 15, 21, 0.94); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+  #panel.hidden { display: none; }
+  .sec { border-top: 1px solid var(--line); padding: 10px 0; }
+  .sec:first-of-type { border-top: 0; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .row label { color: var(--muted); font-size: 13px; }
+  .note { color: var(--muted); font-size: 12.5px; margin: 4px 0; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .grid4 label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 2px; }
+  .grid4 input { width: 100%; }
+  kbd { background: #222a35; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; font-size: 12px; }
+
+  #centerMsg { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); text-align: center; pointer-events: none; z-index: 2;
+               font-size: clamp(22px, 3vw, 46px); font-weight: 800; text-shadow: 0 3px 16px rgba(0, 0, 0, .55); transition: opacity .4s; }
+  #centerMsg small { display: block; font-size: 0.42em; font-weight: 600; opacity: .9; margin-top: 6px; }
+  body.mode-split #centerMsg { left: 25%; }
+
+  #welcome { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 6; background: rgba(6, 9, 13, 0.55); }
+  #welcome.hidden { display: none; }
+  #welcome .card { background: rgba(11, 15, 21, 0.95); border: 1px solid var(--line); border-radius: 18px; padding: 26px 30px; width: min(560px, 92vw); }
+  #welcome h1 { margin: 0 0 6px; font-size: 28px; }
+  #welcome h1 span { color: var(--accent); }
+  #welcome ol { margin: 10px 0 18px 20px; padding: 0; color: #d6dde6; }
+  #welcome li { margin: 4px 0; }
+
+  #toast { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); z-index: 7; max-width: min(720px, 90vw);
+           background: var(--hud); border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px; font-weight: 600; display: none; }
+  #toast.show { display: block; }
+  #toast.bad { border-color: var(--bad); }
+  #toast.warn { border-color: var(--warn); }
+  #toast.good { border-color: var(--good); }
+</style>
+<script type="importmap">{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }</script>
+</head>
+<body class="mode-ours">
+<div id="stage">
+  <canvas id="view" aria-label="3D view of the throw"></canvas>
+  <iframe id="tdFrame" title="TechDisc simulator" allow="fullscreen"></iframe>
+</div>
+
+<header id="top">
+  <div class="brand">Disc<span>Tracker</span> Sim</div>
+  <div class="pill" id="connPill" title="Bluetooth connection to the disc"><span class="dot"></span><span id="connText">Not connected</span></div>
+  <div class="pill" id="discPill" title="Simulated disc – click to change"><span id="discText">–</span></div>
+  <div class="pill" id="battPill" style="display:none"><span id="battText"></span></div>
+  <div class="pill rec" id="recPill" style="display:none" title="Recording raw data to this computer – click for details"><span class="dot"></span><span id="recText">REC</span></div>
+  <div class="spacer"></div>
+  <select id="modeSel" title="What the screen shows (M)">
+    <option value="ours">Our 3D simulator</option>
+    <option value="split">Side by side with TechDisc</option>
+    <option value="techdisc">TechDisc only</option>
+    <option value="live">Live sensor data</option>
+  </select>
+  <button id="gameBtn" title="Play a round: every throw is your next shot (G)">⛳ Play a round</button>
+  <button id="replayBtn" title="Replay the last throw (R or Space)">↻ Replay</button>
+  <button id="sessBtn" title="Show or hide the session list (S)">Session</button>
+  <button id="setBtn" title="Settings">⚙ Settings</button>
+  <button id="fsBtn" title="Full screen (F)">⛶</button>
+</header>
+
+<div id="flightInfo"></div>
+<div id="gameHud" class="hidden">
+  <div class="gh-top"><b id="ghHole">Hole 1</b><span id="ghInfo"></span><span class="spacer"></span><span id="ghTotal"></span></div>
+  <div id="ghState"></div>
+  <div class="gh-row" id="ghAimRow"><span id="ghAim" style="min-width:150px"></span>
+    <button class="small" id="ghLeft" title="Aim further left (←)">◀</button><button class="small" id="ghRight" title="Aim further right (→)">▶</button>
+    <button class="small" id="ghCenter" title="Aim straight at the basket">at basket</button></div>
+  <div class="gh-row"><button class="small" id="ghUndo" title="Take the last shot back – it doesn't count">Mulligan</button>
+    <button class="small" id="ghRestart">Restart hole</button><button class="small" id="ghTest" title="A random shot, no disc needed">Test shot</button>
+    <span class="spacer"></span><button class="small primary" id="ghNext">Next hole ▸</button></div>
+  <div id="ghCard"></div>
+</div>
+<div id="centerMsg"></div>
+<div id="toast"></div>
+
+<aside id="session">
+  <h3>This session</h3>
+  <div id="sessSummary">No throws yet.</div>
+  <ul id="sessList"></ul>
+</aside>
+
+<aside id="panel" class="hidden">
+  <div class="sec">
+    <h3>Record raw data to this computer</h3>
+    <p class="note">Streams every sensor reading (416 a second) over Bluetooth into a folder on this computer. Nothing is
+      stored on the disc, so the length is limited only by this computer's disk – about 18 MB an hour. Every throw is
+      also saved with its own readings and the disc's results. A new file starts every minute, so a crash loses at most
+      a minute. Keep this page open (it can be in the background) and the computer awake.</p>
+    <div class="row"><button class="primary small" id="recBtn">● Start recording</button><span class="note" id="recState">Not recording</span></div>
+    <div class="labels" id="labelBtns">
+      <button class="small" data-mark="1">Drop</button><button class="small" data-mark="2">Throw into net</button>
+      <button class="small" data-mark="3">Real throw</button><button class="small" data-mark="4">Hand spin / flick</button>
+      <button class="small" data-mark="5">Other</button>
+    </div>
+    <p class="note">Tap a label before each test to mark it in the recording. To analyze: <code>py disclab.py import "that folder"</code>.</p>
+  </div>
+  <div class="sec">
+    <h3>Calibrate the disc</h3>
+    <p class="note">Step by step, with the disc on a table: which way is up on its board, the gyro's offset and the spin radius
+      (how far the sensor sits from the disc's center). The calibration page connects to the disc itself, so this page lets go
+      of it while you are there.</p>
+    <div class="row"><button class="small" id="calBtn">Open the calibration page</button><span class="note" id="calState"></span></div>
+  </div>
+  <div class="sec">
+    <h3>Numbers to fly</h3>
+    <p class="note">The disc's sensor tops out at 16 g of force and 382 rpm of spin, and every hard throw goes past both, so the
+      disc's own numbers read low. <b>Rebuilt</b> works out the throw again from every raw reading: the force past 16 g, the spin
+      past 382 rpm (from the wobble), and where it really left your hand. It needs the disc to stream its readings, which keeps
+      throws out of the disc's own memory (they are kept in this page's throw log instead).</p>
+    <div class="row"><select id="numSel" style="flex:1"><option value="rebuilt">Rebuilt past the sensor's limits (recommended)</option>
+      <option value="disc">The disc's own numbers</option></select></div>
+  </div>
+  <div class="sec">
+    <h3>Disc</h3>
+    <div class="row"><select id="bagSel" style="flex:1"></select></div>
+    <div class="grid4">
+      <label>Speed<input id="dSpeed" type="number" step="0.5" min="1" max="15"></label>
+      <label>Glide<input id="dGlide" type="number" step="0.5" min="1" max="7"></label>
+      <label>Turn<input id="dTurn" type="number" step="0.5" min="-5" max="2"></label>
+      <label>Fade<input id="dFade" type="number" step="0.5" min="0" max="6"></label>
+    </div>
+    <div class="row"><label>Name</label><input id="dName" style="flex:1"><label>Weight</label><input id="dWeight" type="number" min="120" max="200"> g</div>
+    <div class="row"><button class="small" id="bagSave">Save to bag</button><button class="small" id="bagDel">Remove</button>
+      <button class="small" id="reflyBtn">Re-fly last throw with this disc</button></div>
+  </div>
+  <div class="sec">
+    <h3>Thrower &amp; conditions</h3>
+    <div class="row"><label>Throwing hand</label>
+      <select id="handSel"><option value="right">Right</option><option value="left">Left</option></select>
+      <span class="note">Backhand or forehand comes from the measured spin direction.</span></div>
+    <div class="row"><label>Wind</label><input id="windMph" type="number" min="0" max="40" step="1"> mph from
+      <select id="windFrom"><option value="0">ahead (headwind)</option><option value="180">behind (tailwind)</option>
+        <option value="270">the left</option><option value="90">the right</option></select></div>
+    <div class="row"><label>Release height</label><input id="relHeight" type="number" min="0" max="10" step="0.5"> ft</div>
+  </div>
+  <div class="sec">
+    <h3>Play a round</h3>
+    <p class="note">⛳ at the top turns it on: nine holes, every throw is flown from where the last one landed, aimed at the
+      basket (← → to aim left or right). A disc that flies through the chains is in. Indoors a soft putt is hard to
+      measure, so a disc landing this close counts as one more throw to finish:</p>
+    <div class="row"><label>Tap-in distance</label><select id="gimmeSel"><option value="0">none – putt everything</option>
+      <option value="6">6 ft</option><option value="10">10 ft</option><option value="20">20 ft</option><option value="33">33 ft (circle 1)</option></select>
+      <button class="small" id="newRoundBtn">New round</button></div>
+    <div class="row"><button class="primary small" id="gameBtn2">⛳ Play a round</button></div>
+  </div>
+  <div class="sec">
+    <h3>Display</h3>
+    <div class="row"><label>Camera (C)</label><select id="camSel">
+      <option value="follow">Follow the disc</option><option value="tee">Behind the thrower</option><option value="top">Overhead</option></select></div>
+    <div class="row"><label>Playback</label><select id="speedSel"><option value="1">Real time</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
+      <label>Units</label><select id="unitSel"><option value="ft">feet</option><option value="m">meters</option></select></div>
+    <div class="row"><label>Disc size on screen</label><select id="scaleSel"><option value="1">Real size</option><option value="3">3×</option><option value="5">5×</option></select></div>
+  </div>
+  <div class="sec">
+    <h3>TechDisc</h3>
+    <p class="note">Every throw can also be flown in TechDisc's own simulator: pick <b>Side by side</b> or <b>TechDisc only</b> at the top,
+      or open it in its own window (for a second screen). TechDisc has no wobble input, so it flies every throw as if wobble were 0.</p>
+    <div class="row"><button class="small" id="tdWinBtn">Open TechDisc in a second window</button><span class="note" id="tdWinNote"></span></div>
+  </div>
+  <div class="sec">
+    <h3>Session &amp; tools</h3>
+    <div class="row"><button class="small" id="exportBtn">Export session (Excel)</button><button class="small" id="clearBtn">Clear session</button></div>
+    <div class="row"><button class="small" id="testBtn">Test throw (no disc needed)</button><button class="small" id="discBtn">Disconnect</button></div>
+    <p class="note">Keys: <kbd>F</kbd> full screen · <kbd>R</kbd>/<kbd>Space</kbd> replay · <kbd>C</kbd> camera · <kbd>M</kbd> display ·
+      <kbd>S</kbd> session list · <kbd>Esc</kbd> close.</p>
+    <p class="note">The disc can be connected to one device at a time – disconnect the phone first.
+      <a href="./">Phone app</a> · <a href="calibrate.html">Calibrate the disc</a> · <a href="disc3d.html">Live 3D disc</a></p>
+  </div>
+</aside>
+
+<div id="welcome">
+  <div class="card">
+    <h1>Disc<span>Tracker</span> Sim</h1>
+    <p class="note" style="font-size:14px">Every throw flies on this screen automatically.</p>
+    <ol>
+      <li>Wake the disc (pick it up or give it a shake). Close the phone app if it's connected.</li>
+      <li>Click <b>Connect</b> and choose <b>DiscTracker</b>.</li>
+      <li>Throw. Spin and wobble are measured while the disc flies freely, so give it a moment in the air: a toss
+        caught from 1.5 m (5 ft) works, and 3 m (10 ft) or more from a net gives a longer free flight.</li>
+    </ol>
+    <div class="row"><button class="primary" id="welcomeConnect">Connect to the disc</button>
+      <button id="welcomeSkip">Look around first</button><button id="welcomeGame">⛳ Play a round</button></div>
+    <p class="note" id="btNote"></p>
+  </div>
+</div>
+
+<div id="stats">
+  <div class="tile big"><div class="k">Distance</div><div class="v"><span id="vDist">–</span><span class="u" id="uDist">ft</span></div><div class="s" id="sDist"></div></div>
+  <div class="tile"><div class="k">Speed</div><div class="v"><span id="vSpeed">–</span><span class="u">mph</span></div><div class="s" id="sSpeed"></div></div>
+  <div class="tile"><div class="k">Spin</div><div class="v"><span id="vSpin">–</span><span class="u">rpm</span></div><div class="s" id="sSpin"></div></div>
+  <div class="tile"><div class="k">Hyzer</div><div class="v"><span id="vHyzer">–</span><span class="u">°</span></div><div class="s" id="sHyzer"></div></div>
+  <div class="tile"><div class="k">Nose</div><div class="v"><span id="vNose">–</span><span class="u">°</span></div><div class="s" id="sNose"></div></div>
+  <div class="tile"><div class="k">Launch</div><div class="v"><span id="vLaunch">–</span><span class="u">°</span></div><div class="s" id="sLaunch"></div></div>
+  <div class="tile"><div class="k">Wobble</div><div class="v"><span id="vWobble">–</span><span class="u">°</span></div><div class="s" id="sWobble"></div></div>
+</div>
+
+<div id="livePage">
+  <section class="lp-card">
+    <div class="lp-bar"><b>Live sensor data</b><span id="lpRate">waiting for the disc…</span><span class="spacer"></span>
+      <label>Window <select id="lpWin"><option value="3">3 s</option><option value="6" selected>6 s</option><option value="12">12 s</option></select></label>
+      <label title="Show the chip's own numbers (counts) instead of °/s and g"><input type="checkbox" id="lpCounts"> raw counts</label>
+      <button class="small" id="lpPause" title="Freeze the graphs (P)">❚❚ Pause</button>
+      <button class="small" id="lpCal" title="Check and set the disc's calibration (opens the calibration page, which connects to the disc itself)">Calibrate…</button></div>
+    <div class="cvwrap"><canvas id="lpCanvas"></canvas></div>
+    <div id="lpWait">Connect the disc to see its live readings.</div>
+  </section>
+  <aside class="lp-card" id="lpSide">
+    <h3>Right now – straight from the chip</h3>
+    <div class="kv" id="lpRaw"></div>
+    <p class="note">The chip sends whole numbers ("counts"). Converting is a fixed scale: °/s = counts × 0.070, g = counts × 0.000488.
+      Gyro tops out at ±2294 °/s (382 rpm), accelerometer at ±16 g.</p>
+    <h3>Calculated from it, live</h3>
+    <div class="calc" id="lpCalc"></div>
+    <h3>Last throw (the disc's numbers)</h3>
+    <div class="calc" id="lpLast"><span class="why">No throw yet.</span></div>
+    <h3>What the colored sections mean</h3>
+    <div class="calc" id="lpLegend"></div>
+    <p class="note">While this page is open the disc sends every reading here, so its throws are not saved in the disc's memory.
+      To keep them, start a recording (⚙ Settings).</p>
+    <p class="note">Readings look off? <a href="calibrate.html">Calibrate the disc</a> (step by step, about 5 minutes).</p>
+  </aside>
+  <section class="lp-card">
+    <div class="lp-bar"><b>How the last throw was measured</b><select id="lpThrowSel" style="display:none"></select><span id="lpCheck"></span>
+      <span class="spacer"></span>
+      <label title="Also draw the new tracker (orange): the force rebuilt past the 16 g limit, the spin past the gyro's 382 rpm, and its own release point"><input type="checkbox" id="lpRebuilt" checked> rebuilt</label>
+      <span id="lgCount"></span>
+      <button class="small" id="lgCsv" title="Your labels next to the disc's numbers, one row per throw">Export log (Excel)</button>
+      <button class="small" id="lgJson" title="Everything including the raw readings, for re-tuning the calculations">Data file</button></div>
+    <div class="lp-break-body"><div class="cvwrap"><canvas id="lpBreak"></canvas></div>
+      <ol id="lpSteps"><li>Throw the disc – every step of the calculation, with its numbers, shows up here.</li></ol></div>
+  </section>
+  <aside class="lp-card" id="lpLog">
+    <div class="lp-bar"><b>This throw</b><span id="lgWhich"></span><span class="spacer"></span><span class="lg-dist" id="lgDist">–</span></div>
+    <div class="cvwrap lg-sim"><canvas id="lgCanvas"></canvas></div>
+    <div class="note" id="lgSimNote" style="margin:0 0 6px"></div>
+    <div class="lg-form">
+      <label>What it really was<select id="lgType"><option value="">–</option><option>Backhand</option><option>Forehand</option>
+        <option>Overhand / thumber</option><option>Roller</option><option>Putt</option><option>Drop test</option><option>Hand spin / flick</option>
+        <option>Not a throw</option><option>Other</option></select></label>
+      <label>Thrown into<select id="lgWhere"><option value="">–</option><option>Net</option><option>Open field</option><option>Indoors, no net</option>
+        <option>Caught / hand</option></select></label>
+      <label>My speed guess (mph)<input id="lgSpeed" type="number" min="0" max="90" step="1" placeholder="e.g. 40"></label>
+      <label>My spin guess<select id="lgSpin"><option value="">–</option><option value="0-500">low (under 500 rpm)</option>
+        <option value="500-800">medium (500–800 rpm)</option><option value="800-1100">high (800–1100 rpm)</option>
+        <option value="1100-2000">very high (over 1100 rpm)</option></select></label>
+      <label class="q" title="Real distance in feet, if you threw it outdoors">Distance ft<input id="lgDistIn" type="number" min="0" max="700" step="5" placeholder="?"></label>
+      <label class="q">Angle<select id="lgAngle"><option value="">–</option><option>Hyzer</option><option>Flat</option><option>Anhyzer</option></select></label>
+      <label class="q">Wobble<select id="lgWob"><option value="">–</option><option>None</option><option>Some</option><option>A lot</option></select></label>
+      <label class="q">Nose<select id="lgNose"><option value="">–</option><option>Down</option><option>Flat</option><option>Up</option></select></label>
+      <label class="n8">Notes<input id="lgNote" placeholder="anything odd about this one"></label>
+      <button class="primary small" id="lgSave">Save label</button>
+    </div>
+    <div class="note" style="margin-top:4px" id="lgState"></div>
+  </aside>
+</div>
+
+<script src="flight.js?v=2026-10-21b"></script>
+<script src="track.js?v=2026-10-28"></script>
+<script type="module">
+import * as THREE from "three";
+import { Line2 } from "three/addons/lines/Line2.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+const { simulateFlight, wobbleFromRateAngle, techdiscSimUrl } = window.DiscFlight;
+const $ = id => document.getElementById(id);
+const FT_PER_M = 3.28084;
+const frontDeg = (() => { try { return parseFloat(localStorage.getItem("disctracker.front.v1")) || 0; } catch { return 0; } })();
+
+// ---------------------------------------------------------------- storage
+const loadJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const saveJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+const BKEY = "disctracker.bag.v1", SETK = "disctracker.sim.settings.v1", SESK = "disctracker.sim.session.v1";
+const DEFAULT_BAG = [
+  { name: "Distance driver", speed: 12, glide: 5, turn: -1, fade: 3 },
+  { name: "Fairway driver", speed: 7, glide: 5, turn: 0, fade: 2 },
+  { name: "Midrange", speed: 5, glide: 5, turn: 0, fade: 1 },
+  { name: "Putter", speed: 2, glide: 3, turn: 0, fade: 1 },
+  { name: "Understable driver", speed: 9, glide: 5, turn: -3, fade: 1 },
+];
+let bag = loadJSON(BKEY, DEFAULT_BAG);
+const settings = Object.assign({ disc: bag[0], hand: "right", windMph: 0, windFrom: 0, heightFt: 4, camera: "follow",
+  speedX: 1, units: "ft", scale: 3, mode: "ours", showSession: true, rebuilt: true }, loadJSON(SETK, {}));
+let session = loadJSON(SESK, []);
+const saveSettings = () => saveJSON(SETK, settings);
+const saveSession = () => saveJSON(SESK, session.slice(-300));
+
+// ---------------------------------------------------------------- formatting
+const fmt = (v, d = 0) => Number.isFinite(v) ? v.toFixed(d) : "–";
+const signed = (v, d = 1) => Number.isFinite(v) ? (v > 0 ? "+" : "") + v.toFixed(d) : "–";
+// a threshold from the disc (a 32-bit float: 1.4 arrives as 1.3999999761...), for text
+const nf = v => +(+v).toPrecision(4);
+const dist = ft => settings.units === "m" ? ft / FT_PER_M : ft;
+const unit = () => settings.units === "m" ? "m" : "ft";
+const styleName = t => {
+  const r = settings.hand === "right";
+  return t.ccw ? (r ? "RH forehand" : "LH backhand") : (r ? "RH backhand" : "LH forehand");
+};
+let toastTimer = 0;
+function toast(text, kind = "", ms = 4500) {
+  const el = $("toast"); el.textContent = text; el.className = "show " + kind;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.className = "", ms);
+}
+let msgTimer = 0;
+function centerMsg(html, ms = 0) {
+  $("centerMsg").innerHTML = html; $("centerMsg").style.opacity = html ? 1 : 0;
+  clearTimeout(msgTimer); if (ms) msgTimer = setTimeout(() => centerMsg(""), ms);
+}
+
+// ================================================================ Bluetooth
+const SVC = "19b10000-e8f2-537e-4f6c-d104768a1214", SUMMARY = "19b10001-e8f2-537e-4f6c-d104768a1214",
+      CMD = "19b10002-e8f2-537e-4f6c-d104768a1214", LIVE = "19b10004-e8f2-537e-4f6c-d104768a1214",
+      STATUS = "19b10005-e8f2-537e-4f6c-d104768a1214", BTSTREAM = "19b10009-e8f2-537e-4f6c-d104768a1214";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), ms))]);
+let device = null, looping = false, userStop = false, connected = false, liveUp = null, capturingSince = 0;
+let cmdChar = null, hasBtStream = false, streamSent = null;
+// The disc streams raw samples while the computer records them, the live page is open, or the throws are flown with
+// the rebuilt numbers (those are worked out from the raw samples).
+const wantStream = () => !!(rec.on || settings.mode === "live" || settings.rebuilt);
+async function syncStream(force) {
+  if (!hasBtStream || !cmdChar) return;
+  const w = wantStream();
+  if (force || w !== streamSent) { streamSent = w; await sendCmd(w ? "bton" : "btoff"); }
+}
+async function sendCmd(text) {
+  if (!cmdChar) return false;
+  try {
+    const d = new TextEncoder().encode(text);
+    await (cmdChar.writeValueWithoutResponse ? cmdChar.writeValueWithoutResponse(d) : cmdChar.writeValue(d));
+    return true;
+  } catch (e) { console.warn("command failed", text, e); return false; }
+}
+
+function setConn(state, n = 0) {
+  connected = state === "on";
+  const pill = $("connPill");
+  pill.className = "pill " + ({ on: "on", connecting: "busy", retry: "busy", lost: "busy", bad: "bad" }[state] || "");
+  $("connText").textContent = { on: "Disc connected", connecting: "Connecting…", retry: `Looking for the disc (${n})…`,
+    lost: "Connection lost – reconnecting…", bad: "Bluetooth unavailable", off: "Not connected" }[state] || "Not connected";
+  $("discBtn").textContent = device ? "Disconnect" : "Connect";
+  if (connected) { $("welcome").classList.add("hidden"); if (!animating) idleMsg(); }
+}
+
+async function pickDisc() {
+  if (!navigator.bluetooth) {
+    setConn("bad");
+    toast("This browser can't use Bluetooth. Open this page in Chrome or Edge on the computer.", "bad", 9000);
+    return;
+  }
+  try {
+    const d = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }, { name: "DiscTracker" }], optionalServices: [SVC] });
+    if (device && device !== d) { userStop = true; try { device.gatt.disconnect(); } catch {} }
+    device = d; hookDevice(d);
+  } catch (e) {
+    if (e && e.name === "NotFoundError") return;              // picker cancelled
+    toast("Bluetooth: " + (e && e.message ? e.message : e), "bad"); return;
+  }
+  userStop = false; connectLoop();
+}
+function hookDevice(d) {
+  if (d._hooked) return; d._hooked = true;
+  d.addEventListener("gattserverdisconnected", () => {
+    if (d !== device) return;
+    cmdChar = null; hasBtStream = false; updateRecUi();
+    setConn(userStop ? "off" : "lost");
+    if (!userStop) connectLoop();
+  });
+}
+// Chrome connects to a disc it remembers (after a browser or computer restart) only once it has heard it advertise
+// again, so listen for it first; a remembered disc that still won't connect is let go, and Connect asks afresh.
+async function heardDisc(d, ms) {
+  if (!d.watchAdvertisements) return;
+  const ac = window.AbortController ? new AbortController() : null;
+  try {
+    await new Promise(res => {
+      const t = setTimeout(res, ms);
+      d.addEventListener("advertisementreceived", () => { clearTimeout(t); res(); }, { once: true });
+      d.watchAdvertisements(ac ? { signal: ac.signal } : undefined).catch(() => { clearTimeout(t); res(); });
+    });
+  } finally { if (ac) ac.abort(); }
+}
+async function connectLoop() {
+  if (looping || !device) return;
+  looping = true; let n = 0;
+  while (device && !userStop && !device.gatt.connected) {
+    n++; setConn(n === 1 ? "connecting" : "retry", n);
+    if (device._remembered && n > 4) { forgetRemembered(); break; }
+    if (n === 1 || n % 3 === 0) await heardDisc(device, 6000);
+    try { await withTimeout(setupGatt(), 12000); if (device) device._remembered = false; }
+    catch (e) { console.warn("connect attempt failed", e); try { device.gatt.disconnect(); } catch {} await sleep(Math.min(1000 * n, 3000)); }
+  }
+  looping = false;
+}
+async function setupGatt() {
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SVC);
+  try {
+    const st = await svc.getCharacteristic(STATUS);
+    st.addEventListener("characteristicvaluechanged", e => onStatus(parseStatus(e.target.value)));
+    await st.startNotifications();
+    onStatus(parseStatus(await st.readValue()));
+  } catch (e) { console.warn("no status channel", e); }
+  try {
+    const lv = await svc.getCharacteristic(LIVE);
+    lv.addEventListener("characteristicvaluechanged", e => onLive(e.target.value));
+    await lv.startNotifications();
+  } catch (e) { console.warn("no live channel", e); }
+  const sm = await svc.getCharacteristic(SUMMARY);            // last: the disc then sends throws it stored
+  sm.addEventListener("characteristicvaluechanged", e => onSummary(e.target.value));
+  await sm.startNotifications();
+  try { cmdChar = await svc.getCharacteristic(CMD); } catch { cmdChar = null; }
+  hasBtStream = false;
+  try {
+    const bt = await svc.getCharacteristic(BTSTREAM);
+    bt.addEventListener("characteristicvaluechanged", e => onBtPacket(e.target.value));
+    await bt.startNotifications();
+    hasBtStream = true;
+  } catch (e) { console.warn("no raw-stream channel (older firmware)", e); }
+  if (hasBtStream) await syncStream(true);                   // carry on a recording / live view after a drop-out
+  setConn("on"); updateRecUi();
+}
+async function disconnect() {
+  userStop = true;
+  if (device) { try { device.gatt.disconnect(); } catch {} }
+  device = null; setConn("off");
+}
+// Chrome remembers discs this page was allowed to use: reconnect after a reload without asking again.
+if (navigator.bluetooth && navigator.bluetooth.getDevices) {
+  navigator.bluetooth.getDevices().then(list => {
+    const d = list.find(x => (x.name || "").startsWith("Disc"));
+    if (d && !device) { device = d; d._remembered = true; hookDevice(d); userStop = false; connectLoop(); }
+  }).catch(() => {});
+}
+function forgetRemembered() {
+  try { device.gatt.disconnect(); } catch {}
+  device = null; setConn("off");
+  toast("Couldn't reconnect to the disc by itself. Press Connect and choose DiscTracker.", "bad", 10000);
+}
+
+function parseSummary(dv) {
+  if (dv.byteLength < 20 || dv.getUint8(0) !== 3) return null;
+  const b19 = dv.getUint8(19);
+  const t = {
+    flags: dv.getUint8(1), seq: dv.getUint16(2, true), boot: dv.getUint16(4, true),
+    speed: dv.getUint16(6, true) / 10, spin: dv.getUint16(8, true), hyzer: dv.getInt16(10, true) / 10,
+    nose: dv.getInt16(12, true) / 10, launch: dv.getInt16(14, true) / 10, wobble: dv.getUint16(16, true) / 10,
+    peak: dv.getUint8(18) / 4, ccw: !!(dv.getUint8(1) & 128), spinSrc: b19 & 0x7f, wobbleOld: !(b19 & 0x80),
+  };
+  if (t.wobbleOld) { t.wobbleRaw = t.wobble; t.wobble = wobbleFromRateAngle(t.wobble); }   // older firmware: ~2x
+  return t;
+}
+function parseStatus(dv) {
+  const n = dv.byteLength;
+  return { battery: dv.getUint8(3), charging: !!(dv.getUint8(6) & 2), sens: (dv.getUint8(6) >> 3) & 7,
+           lastCapture: dv.getUint8(7), throws: dv.getUint16(8, true), rejectPeak: dv.getUint16(10, true) / 10,
+           rejectSpin: dv.getUint16(12, true), captures: n >= 20 ? dv.getUint16(14, true) : 0, end: n >= 20 ? dv.getUint8(16) : 0,
+           rejectFlags: n >= 20 ? dv.getUint8(18) : 0, mode: n >= 20 ? dv.getUint8(19) : 0 };
+}
+// Why the disc did not count a capture. The accept rule is the same in every firmware version - a release (not
+// needed at levels 1-2), spin of at least the level's minimum, then a pull over minPeakG - only the thresholds
+// moved (v4: 2.0 g from level 3 up), so the reason is taken in that order. End reason 4 (v4): readings were lost.
+const MIN_SPIN = [60, 0, 15, 30, 45, 60];
+function rejectWhy(st) {
+  const I = live.info || rec.info, P = I && I.logVer >= 4 ? relRules(I) : null, lvl = st.sens || 5;
+  if (st.end === 4) return "some readings were lost while it was recording, so it was thrown away";
+  if ((st.rejectFlags & 8) && lvl > 2)
+    return P ? `no release with the disc spinning freely${P.relMinRpm > 0 ? ` (needs ${nf(P.relMinRpm)} rpm, steady)` : ""}` : "no clean release";
+  if (st.rejectSpin < MIN_SPIN[lvl]) return `not enough spin (${st.rejectSpin} rpm)`;
+  return `too gentle (${st.rejectPeak.toFixed(1)} g${I ? `, needs over ${nf(I.minPeak)} g` : ""})`;
+}
+
+let lastRejectKey = null, lastRejectVals = null, lastMode = 0;
+function onStatus(st) {
+  const b = st.battery;
+  if (b !== 0xFF && b <= 100) { $("battPill").style.display = ""; $("battText").textContent = `🔋 ${b}%${st.charging ? " ⚡" : ""}`; }
+  if (st.mode === 1 && lastMode !== 1) toast("The disc went to standby. Pick it up or shake it to wake it.", "warn", 7000);
+  lastMode = st.mode;
+  if (st.lastCapture === 2) {
+    // A new reject raises the capture count. v4 firmware also counts a "quiet" reject (a spinless capture that ran
+    // to the 3 s limit: handling) and sends a status for it that keeps the last reject's values: no banner for it.
+    const vals = `${st.rejectPeak}-${st.rejectSpin}-${st.rejectFlags}`, key = `${st.captures}-${vals}`;
+    if (key !== lastRejectKey && lastRejectKey !== null && !(vals === lastRejectVals && st.end === 3)) {
+      toast(`Movement detected but not counted as a throw: ${rejectWhy(st)}.`, "warn");
+      capturingSince = 0; if (!animating) idleMsg();
+    }
+    lastRejectKey = key; lastRejectVals = vals;
+  } else if (lastRejectKey === null) lastRejectKey = "";
+}
+function onLive(dv) {
+  if (dv.byteLength < 10 || dv.getUint8(0) < 2) return;
+  const flags = dv.getUint8(1);
+  liveUp = [dv.getInt16(4, true) / 1e4, dv.getInt16(6, true) / 1e4, dv.getInt16(8, true) / 1e4];
+  if ((flags & 2) && !capturingSince) { capturingSince = performance.now(); centerMsg("Reading the throw…"); }
+  if (!(flags & 2) && capturingSince && performance.now() - capturingSince > 4000) { capturingSince = 0; if (!animating) idleMsg(); }
+}
+
+// Throws arrive one by one; after a reconnect the disc may send several it stored
+// at once. Every one goes in the session list; only the newest is flown.
+let pending = [], pendTimer = 0;
+function onSummary(dv) {
+  const t = parseSummary(dv);
+  if (!t) { toast(`A throw arrived in an unknown format (${dv.byteLength} bytes) – update the disc's firmware.`, "bad"); return; }
+  if (!(t.flags & 1)) return;
+  t.key = `b${t.boot}-${t.seq}`;
+  if (session.some(e => e.key === t.key)) return;
+  capturingSince = 0;
+  if (rebuilding()) { held.sums.push({ t, at: performance.now() }); centerMsg("Rebuilding the throw…"); matchHeld(); setTimeout(matchHeld, HOLD_SUM + 50); return; }
+  pending.push(t);
+  clearTimeout(pendTimer);
+  pendTimer = setTimeout(() => {
+    const batch = pending; pending = [];
+    let last = null;
+    for (const x of batch) last = addThrow(x, false);
+    if (batch.length > 1) toast(`${batch.length - 1} earlier throw${batch.length > 2 ? "s" : ""} from while the disc was away added to the list.`, "", 5000);
+    if (last) play(last, true);
+  }, 300);
+}
+
+// With "rebuilt" on and the stream running, a throw comes twice: the disc's summary (its own numbers) and, from the
+// stream, its recording, which this page rebuilds (track.js). Each throw makes one of each, close together, so they
+// are paired in order. A summary whose recording doesn't come within HOLD_SUM flies with the disc's numbers (e.g.
+// throws the disc stored while it was away); a counted recording whose summary doesn't come within HOLD_CAP flies on
+// its own. A recording the disc did not count flies too if the rebuild clearly finds a throw in it.
+const HOLD_SUM = 5000, HOLD_CAP = 3000, held = { sums: [], caps: [] };
+const rebuilding = () => !!(settings.rebuilt && hasBtStream && streamSent && window.DiscTrack);
+function matchHeld() {
+  const now = performance.now(), fly = [];
+  while (held.sums.length && held.caps.length) fly.push([held.sums.shift().t, held.caps.shift().ent]);
+  while (held.sums.length && now - held.sums[0].at > HOLD_SUM) fly.push([held.sums.shift().t, null]);
+  while (held.caps.length && now - held.caps[0].at > HOLD_CAP) fly.push([null, held.caps.shift().ent]);
+  if (!fly.length) return;
+  let last = null;
+  for (const [t, ent] of fly) last = addThrow(throwFrom(t, ent), false) || last;
+  if (fly.length > 1) toast(`${fly.length - 1} earlier throw${fly.length > 2 ? "s" : ""} added to the list.`, "", 5000);
+  if (last) play(last, true);
+}
+// a recording the disc didn't count, rebuilt as a throw: a release found, spinning, moving
+const clearThrow = nw => !!nw && nw.relFound && nw.spin >= 150 && nw.speed >= 8 && !(nw.gap > 3);
+// the throw to fly: the rebuilt numbers when the rebuild found the release, else the disc's (kept alongside)
+function throwFrom(t, ent) {
+  const c = ent && ent.c, d = c && c.res, nw = ent ? nwOf(ent) : null;
+  const disc = t || { speed: d[0], spin: d[1], hyzer: d[2], nose: d[3], launch: d[4], wobble: d[5], ccw: !!(c.flags & 128), flags: c.flags, spinSrc: c.src,
+                      key: `c${ent.info.boot}-${c.start}` };
+  if (!nw || !nw.relFound || nw.gap > 3) return disc;
+  return { ...disc, speed: nw.speed, spin: nw.spin, hyzer: nw.hyzer, nose: nw.nose, launch: nw.launch, wobble: nw.wobble ?? disc.wobble,
+    ccw: nw.ccw, spinSrc: 0, wobbleOld: false, rebuilt: true, spinAtLeast: nw.atLeast, rebuiltSpin: nw.spinSrc, uncounted: !t && !(c.counted),
+    discSaid: { speed: disc.speed, spin: disc.spin, hyzer: disc.hyzer, nose: disc.nose, launch: disc.launch, wobble: disc.wobble } };
+}
+
+// ================================================================ raw recording to this computer
+// The disc streams every sample over Bluetooth (packet types in disc_tracker_v2.ino, btStreamChr).
+// They are written here in the disc's own log format - records of a 256-byte header + raw
+// samples - so `disclab.py import` reads them like a download from the disc's memory:
+//   type 2  continuous recording, CHUNK samples per record (~4.9 s)
+//   type 1  a throw: its samples cut out of the stream + the disc's results
+//   type 3  a test label (Drop, Net throw, ...)
+const LOG_MAGIC = 0x474F4C44, CHUNK = 2048, PART_RECORDS = 12, RING = 16384;
+const DEFAULT_INFO = { boot: 0, seq: 0, millis: 0, odr: 416, sens: 5, logVer: 3, alsb: 0.000488, glsb: 0.07, bias: [0, 0, 0],
+  R: [1, 0, 0, 0, 1, 0, 0, 0, 1], radius: 0, batt: 0, trigG: 3.5, trigDps: 600, freeG: 3, minPeak: 3.5, minSpin: 60 };
+// Firmware v4 (log version 4) release rules per sensitivity level (SENS[] in disc_tracker_v2.ino), for an info
+// packet that does not carry them (100 bytes = older firmware).
+const REL_V4 = [null, { relMinRpm: 0, relPeakG: 1.4 }, { relMinRpm: 40, relPeakG: 1.5 }, { relMinRpm: 100, relPeakG: 2.0 },
+  { relMinRpm: 150, relPeakG: 2.0 }, { relMinRpm: 150, relPeakG: 2.0 }];
+// What a v4 analysis needs beyond the v3 thresholds: the release rules, and the calibration state from calFlags
+// (bit1 radius locked by the calibration page, bit6 lever-arm correction on). Missing fields get the firmware defaults.
+function relRules(I) {
+  const d = REL_V4[I.sens] || REL_V4[5], cf = I.calFlags;
+  return { relMinRpm: I.relMinRpm ?? d.relMinRpm, relPeakG: I.relPeakG ?? d.relPeakG, prePeak: I.prePeak ?? 208, steadyN: I.steadyN ?? 20,
+    biasTol: I.biasTol ?? 1.5, lever: cf == null ? true : !!(cf & 64), locked: cf != null && !!(cf & 2) && I.radius > 0 };
+}
+const rec = { on: false, dir: null, sess: null, name: "", part: 0, writer: null, recsInPart: 0, chain: Promise.resolve(), mem: null,
+  recNo: 0, info: null, infos: [], expect: null, lost: 0, samples: 0, bytes: 0, t0: 0, chunk: null, chunkN: 0, chunkSeq: 0, throws: 0,
+  marks: 0, ring: new Int16Array(RING * 6), ringSeq: new Float64Array(RING).fill(-1), pendingCaps: [], wake: null, uiTimer: 0, err: "" };
+
+function parseInfo(dv) {
+  const f = k => dv.getFloat32(16 + 4 * k, true);
+  const I = { boot: dv.getUint16(2, true), seq: dv.getUint32(4, true), millis: dv.getUint32(8, true), odr: dv.getUint16(12, true) || 416,
+    sens: dv.getUint8(14), logVer: dv.getUint8(15) || 3, alsb: f(0), glsb: f(1), bias: [f(2), f(3), f(4)],
+    R: [f(5), f(6), f(7), f(8), f(9), f(10), f(11), f(12), f(13)], radius: f(14), batt: f(15),
+    trigG: f(16), trigDps: f(17), freeG: f(18), minPeak: f(19), minSpin: f(20), infoLen: dv.byteLength };
+  // v4 firmware: 120 bytes - the release rules (100-107), calibration state (calFlags as in the log header), IMU
+  // temperature, the pull's peak window, the steady-spin samples and the per-throw gyro-offset limit. What a
+  // shorter packet lacks (100 bytes = older firmware) gets the v4 defaults for its sensitivity.
+  const d = REL_V4[I.sens] || REL_V4[5], len = dv.byteLength, tc = len >= 120 ? dv.getInt16(114, true) : 0;
+  Object.assign(I, { relMinRpm: len >= 108 ? dv.getFloat32(100, true) : d.relMinRpm, relPeakG: len >= 108 ? dv.getFloat32(104, true) : d.relPeakG });
+  if (len >= 120) Object.assign(I, { calSeq: dv.getUint32(108, true), calFlags: dv.getUint16(112, true), tempCdeg: tc, tempC: tc ? tc / 100 : null,
+    prePeak: dv.getUint16(116, true), steadyN: dv.getUint8(118), biasTol: dv.getUint8(119) / 10 });
+  else Object.assign(I, { calSeq: 0, calFlags: null, tempCdeg: 0, tempC: null, prePeak: 208, steadyN: 20, biasTol: 1.5 });
+  return I;
+}
+// Info packets come every 10 s and after every change. v4 firmware sends one as soon as a counted throw has
+// taught it a new spin radius - before that throw's results packet - so a throw is analysed with the newest info
+// sent before its last reading (the disc's settings while it recorded), not the latest one.
+function keepInfo(list, I) { list.push(I); if (list.length > 12) list.shift(); return I; }
+function infoAt(list, cur, endSeq) {
+  if (!cur) return cur;
+  for (let k = list.length - 1; k >= 0; k--) if (list[k].boot === cur.boot && list[k].seq < endSeq) return list[k];
+  return cur;
+}
+function parseCap(dv) {
+  const f = k => dv.getFloat32(20 + 4 * k, true);
+  return { start: dv.getUint32(2, true), n: dv.getUint16(6, true), rel: dv.getUint16(8, true), liveRel: dv.getUint16(10, true),
+    counted: dv.getUint8(12), src: dv.getUint8(13), flags: dv.getUint16(14, true), end: dv.getUint8(16), sens: dv.getUint8(17),
+    res: Array.from({ length: 10 }, (_, k) => f(k)), tMs: dv.getUint32(60, true), at: performance.now() };
+}
+const tMsAt = seq => { const I = rec.info || DEFAULT_INFO; return Math.max(0, Math.round(I.millis + (seq - I.seq) * 1000 / I.odr)); };
+function header(type, n, tMs, x = {}) {
+  const I = x.info || rec.info || DEFAULT_INFO, len = 256 + n * 12, buf = new ArrayBuffer(len), dv = new DataView(buf);
+  const F = (o, v) => dv.setFloat32(o, +v || 0, true);
+  dv.setUint32(0, LOG_MAGIC, true); dv.setUint16(4, I.logVer, true); dv.setUint16(6, type, true); dv.setUint32(8, len, true);
+  dv.setUint32(12, rec.recNo++, true); dv.setUint16(16, I.boot, true); dv.setUint8(18, x.sens ?? I.sens); dv.setUint8(19, x.end ?? 0);
+  dv.setUint32(20, tMs >>> 0, true); dv.setUint16(24, n, true); dv.setUint16(26, I.odr, true);
+  dv.setUint16(28, x.rel ?? 0xFFFF, true); dv.setUint16(30, x.liveRel ?? 0xFFFF, true);
+  dv.setUint8(32, x.counted ?? 0); dv.setUint8(33, x.src ?? 0); dv.setUint16(34, x.flags ?? 0, true);
+  (x.res || []).forEach((v, k) => F(36 + 4 * k, v));
+  I.bias.forEach((v, k) => F(76 + 4 * k, v)); I.R.forEach((v, k) => F(88 + 4 * k, v));
+  F(124, I.radius); F(128, I.batt); F(132, I.trigG); F(136, I.trigDps); F(140, I.freeG); F(144, I.minPeak); F(148, I.minSpin);
+  F(152, I.alsb); F(156, I.glsb);
+  if (I.logVer >= 4) {                                       // v4 fields at 160 (flash_log.h); older records keep zeros there
+    const P = relRules(I);
+    F(160, P.relMinRpm); F(164, P.relPeakG); dv.setUint16(168, P.prePeak, true); dv.setUint16(170, P.steadyN, true);
+    dv.setUint16(172, I.calFlags || 0, true); dv.setInt16(174, I.tempCdeg || 0, true); F(176, P.biasTol);
+    dv.setUint32(180, (I.calSeq || 0) >>> 0, true); dv.setUint32(184, (x.seq0 || 0) >>> 0, true); F(188, x.lever);
+    F(192, discRate(I, rec.infos));                            // the disc's measured samples per second (the odr above is the nominal 416)
+  }
+  return buf;
+}
+function writeRecord(buf) {
+  rec.bytes += buf.byteLength;
+  if (rec.mem) { rec.mem.push(buf); return; }
+  rec.chain = rec.chain.then(async () => {
+    if (!rec.writer) await openPart();
+    await rec.writer.write(buf);
+    if (++rec.recsInPart >= PART_RECORDS) { const w = rec.writer; rec.writer = null; await w.close(); }   // commit this minute
+  }).catch(e => { console.error(e); rec.err = e.message || String(e); updateRecUi(); });
+}
+async function openPart() {
+  rec.part++; rec.recsInPart = 0;
+  const fh = await rec.sess.getFileHandle(`part_${String(rec.part).padStart(4, "0")}.bin`, { create: true });
+  rec.writer = await fh.createWritable();
+}
+function flushChunk() {
+  if (!rec.chunk || !rec.chunkN) { rec.chunk = null; return; }
+  const buf = header(2, rec.chunkN, tMsAt(rec.chunkSeq), { seq0: rec.chunkSeq });
+  new Int16Array(buf, 256, rec.chunkN * 6).set(rec.chunk.subarray(0, rec.chunkN * 6));
+  rec.chunk = null; rec.chunkN = 0;
+  writeRecord(buf);
+}
+function onBtPacket(dv) {
+  livePacket(dv);                                           // the live page sees everything
+  if (!rec.on || dv.byteLength < 2) return;
+  const type = dv.getUint8(0);
+  if (type === 2 && dv.byteLength >= 100) { rec.info = keepInfo(rec.infos, parseInfo(dv)); return; }
+  if (type === 4) return;                                   // gap notice: the jump in sample numbers is counted below
+  if (type === 3 && dv.byteLength >= 64) { rec.pendingCaps.push(parseCap(dv)); tryCaps(false); return; }
+  if (type !== 1 || dv.byteLength < 6) return;
+  const n = Math.min(dv.getUint8(1), Math.floor((dv.byteLength - 6) / 12)), seq = dv.getUint32(2, true);
+  let j0 = 0;
+  if (rec.expect !== null) {
+    if (seq + n <= rec.expect) return;                       // already have these (resent after a reconnect)
+    if (seq < rec.expect) j0 = rec.expect - seq;
+    else if (seq > rec.expect) { rec.lost += seq - rec.expect; flushChunk(); }   // a gap: start a new record there
+  }
+  for (let j = j0; j < n; j++) {
+    const sq = seq + j, off = 6 + j * 12, ri = sq % RING;
+    if (!rec.chunk) { rec.chunk = new Int16Array(CHUNK * 6); rec.chunkN = 0; rec.chunkSeq = sq; }
+    for (let k = 0; k < 6; k++) { const v = dv.getInt16(off + 2 * k, true); rec.ring[ri * 6 + k] = v; rec.chunk[rec.chunkN * 6 + k] = v; }
+    rec.ringSeq[ri] = sq;
+    if (++rec.chunkN === CHUNK) flushChunk();
+  }
+  rec.expect = seq + n; rec.samples += n - j0;
+  if (rec.pendingCaps.length) tryCaps(false);
+}
+// A throw's results arrive as one packet; its samples are cut out of the stream once they are all in.
+function tryCaps(force) {
+  while (rec.pendingCaps.length) {
+    const c = rec.pendingCaps[0];
+    const ready = rec.expect !== null && rec.expect >= c.start + c.n;
+    if (!ready && !force && performance.now() - c.at < 15000) return;
+    rec.pendingCaps.shift();
+    const ci = infoAt(rec.infos, rec.info, c.start + c.n);   // the disc's settings while it recorded this throw
+    const buf = header(1, c.n, c.tMs, { ...c, seq0: c.start, info: ci }), S = new Int16Array(buf, 256, c.n * 6);
+    let missing = 0;
+    for (let i = 0; i < c.n; i++) {
+      const sq = c.start + i, ri = sq % RING;
+      if (rec.ringSeq[ri] === sq) S.set(rec.ring.subarray(ri * 6, ri * 6 + 6), i * 6);
+      else { missing++; if (i) S.copyWithin(i * 6, (i - 1) * 6, i * 6); }
+    }
+    if (missing) console.warn(`throw saved with ${missing} of ${c.n} samples missing`);
+    // v4 header: the speed change from the lever-arm correction. The throw packet has no room for it, so when the
+    // disc's flags say it was applied it is worked out again here from the same samples (none missing).
+    if (ci && ci.logVer >= 4 && (c.flags & FL.LEVER_ARM) && !missing) {
+      try { const an = analyzeCapture(S, ci); if (an.flags & FL.LEVER_ARM) new DataView(buf).setFloat32(188, an.lever, true); } catch (e) { console.warn(e); }
+    }
+    writeRecord(buf); rec.throws++;
+  }
+}
+function addMark(code) {
+  if (!rec.on) { toast("Start a recording first (Settings → Record raw data).", "warn"); return; }
+  flushChunk();
+  const at = rec.expect ?? (rec.info ? rec.info.seq : 0);
+  writeRecord(header(3, 0, tMsAt(at), { end: code, seq0: at }));
+  rec.marks++;
+  toast(`Marked: ${({ 1: "Drop", 2: "Throw into net", 3: "Real throw", 4: "Hand spin / flick", 5: "Other" })[code]}`, "good", 1800);
+}
+async function recStart() {
+  if (!connected) { toast("Connect the disc first.", "warn"); return; }
+  if (!hasBtStream) { toast("The disc's firmware can't stream to the computer yet – update it.", "bad", 7000); return; }
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  try {
+    if (window.showDirectoryPicker) {
+      rec.dir = await window.showDirectoryPicker({ id: "disctracker-raw", mode: "readwrite" });
+      rec.name = `disc_raw_${stamp}`;
+      rec.sess = await rec.dir.getDirectoryHandle(rec.name, { create: true });
+      rec.mem = null;
+    } else { rec.mem = []; rec.name = `disc_raw_${stamp}.bin`; }
+  } catch (e) { if (e && e.name === "AbortError") return; toast("Couldn't use that folder: " + (e.message || e), "bad"); return; }
+  Object.assign(rec, { on: true, part: 0, writer: null, recsInPart: 0, recNo: 0, info: null, infos: [], expect: null, lost: 0, samples: 0,
+    bytes: 0, t0: Date.now(), chunk: null, chunkN: 0, throws: 0, marks: 0, pendingCaps: [], err: "" });
+  rec.ringSeq.fill(-1);
+  await syncStream(true);
+  try { if (navigator.wakeLock) rec.wake = await navigator.wakeLock.request("screen"); } catch {}
+  clearInterval(rec.uiTimer); rec.uiTimer = setInterval(updateRecUi, 1000);
+  updateRecUi(); toast("Recording raw data to this computer.", "good", 3000);
+}
+async function recStop() {
+  flushChunk(); tryCaps(true);
+  rec.on = false;
+  await syncStream();
+  clearInterval(rec.uiTimer);
+  try { await rec.chain; if (rec.writer) { const w = rec.writer; rec.writer = null; await w.close(); } } catch (e) { rec.err = e.message || String(e); }
+  if (rec.mem) {                                              // no folder access in this browser: one download at the end
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(rec.mem, { type: "application/octet-stream" }));
+    a.download = rec.name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+    rec.mem = null;
+  }
+  try { if (rec.wake) { await rec.wake.release(); rec.wake = null; } } catch {}
+  updateRecUi();
+  toast(`Recording saved: ${fmtDur((Date.now() - rec.t0) / 1000)}, ${(rec.bytes / 1e6).toFixed(1)} MB, ${rec.throws} throws` +
+        (rec.lost ? `, ${rec.lost} samples lost` : ""), "good", 7000);
+}
+const fmtDur = s => `${Math.floor(s / 3600) ? Math.floor(s / 3600) + ":" : ""}${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(Math.floor(s) % 60).padStart(2, "0")}`;
+function updateRecUi() {
+  const pill = $("recPill"), btn = $("recBtn");
+  if (!pill || !btn) return;
+  btn.textContent = rec.on ? "■ Stop recording" : "● Start recording";
+  btn.disabled = !rec.on && (!connected || !hasBtStream);
+  pill.style.display = rec.on ? "" : "none";
+  if (!rec.on) {
+    $("recState").textContent = rec.err ? "Error: " + rec.err : (connected && !hasBtStream ? "This disc's firmware can't stream yet" : "Not recording");
+    return;
+  }
+  const secs = (Date.now() - rec.t0) / 1000, live = connected ? "" : " · disc out of range (it keeps ~10 s)";
+  const txt = `${fmtDur(secs)} · ${(rec.bytes / 1e6).toFixed(1)} MB · ${rec.throws} throws` + (rec.lost ? ` · ${rec.lost} lost` : "");
+  $("recText").textContent = "REC " + txt;
+  $("recState").textContent = (rec.err ? "Error: " + rec.err + " · " : "") + `Recording to ${rec.mem ? "memory (saved when you stop)" : rec.name}: ${txt}${live}`;
+}
+document.addEventListener("visibilitychange", async () => {
+  if (rec.on && document.visibilityState === "visible" && !rec.wake && navigator.wakeLock) { try { rec.wake = await navigator.wakeLock.request("screen"); } catch {} }
+});
+window.addEventListener("beforeunload", e => { if (rec.on) { e.preventDefault(); e.returnValue = "A recording is running."; } });
+
+// ================================================================ live sensor page
+// Every raw sample the disc streams lands in a ring (~39 s) that the graphs read directly. What the disc derives
+// from them - the force without the off-center part, spin two ways, the speed being added up and the release - is
+// worked out here per sample the same way the disc does it. When a throw's results arrive, its samples are cut out
+// of the ring and the disc's analysis (throw_metrics.h) is re-run step by step to show each section of the throw.
+const LRING = 16384, RW = 36, D2R = Math.PI / 180, R2D = 180 / Math.PI, GMS = 9.80665, GYRO_MAX = 32767 * 0.070;
+const live = {
+  ring: new Int16Array(LRING * 6), seqs: new Float64Array(LRING).fill(-1),
+  fAbs: new Float32Array(LRING), fComp: new Float32Array(LRING).fill(NaN), fSpinG: new Float32Array(LRING),
+  fSpinC: new Float32Array(LRING).fill(NaN), fSpeed: new Float32Array(LRING).fill(NaN), fLaunch: new Float32Array(LRING).fill(NaN),
+  fState: new Uint8Array(LRING),          // 0 moving, no reference; 1 held still; 2 adding up; 3 released (values held)
+  qHist: new Float64Array(64 * 4), vHist: new Float64Array(64 * 3),
+  last: -1, prev: -1, run: 0, info: null, infos: [], rx: 0, rxPrev: 0, rxT: 0, rate: 0,
+  stillRun: 0, q: null, v: [0, 0, 0], bias: [0, 0, 0], integN: 0, refSeq: -1, peakRun: 0, trig: -1, peak4: -1, rel: null, rels: [], impMarks: [],
+  caps: [], pendingCaps: [], sel: null, paused: false, pauseAt: -1, uiT: 0,
+};
+const medianOf = arr => { const a = Float64Array.from(arr).sort(); const m = a.length; return !m ? 0 : (m & 1 ? a[m >> 1] : 0.5 * (a[m / 2 - 1] + a[m / 2])); };
+class Q4 {
+  constructor(w = 1, x = 0, y = 0, z = 0) { this.w = w; this.x = x; this.y = y; this.z = z; }
+  norm() { const n = Math.hypot(this.w, this.x, this.y, this.z); if (n > 1e-9) { this.w /= n; this.x /= n; this.y /= n; this.z /= n; } else { this.w = 1; this.x = this.y = this.z = 0; } return this; }
+  integ(wx, wy, wz, dt) {                         // same first-order step as the firmware
+    const h = 0.5 * dt, { w, x, y, z } = this;
+    this.w += -h * (x * wx + y * wy + z * wz); this.x += h * (w * wx + y * wz - z * wy);
+    this.y += h * (w * wy - x * wz + z * wx); this.z += h * (w * wz + x * wy - y * wx); this.norm();
+  }
+  rot(bx, by, bz) {
+    const { w, x, y, z } = this, tx = 2 * (y * bz - z * by), ty = 2 * (z * bx - x * bz), tz = 2 * (x * by - y * bx);
+    return [bx + w * tx + (y * tz - z * ty), by + w * ty + (z * tx - x * tz), bz + w * tz + (x * ty - y * tx)];
+  }
+  static up(ax, ay, az) {
+    const n = Math.hypot(ax, ay, az); if (n < 1e-6) return new Q4();
+    ax /= n; ay /= n; az /= n; const wq = 1 + az;
+    return wq < 1e-6 ? new Q4(0, 1, 0, 0) : new Q4(wq, ay, -ax, 0).norm();
+  }
+}
+
+function livePacket(dv) {
+  if (dv.byteLength < 2) return;
+  const type = dv.getUint8(0);
+  if (type === 2 && dv.byteLength >= 100) { live.info = keepInfo(live.infos, parseInfo(dv)); renderCalState(); return; }
+  if (type === 3 && dv.byteLength >= 64) { live.pendingCaps.push(parseCap(dv)); liveTryCaps(); return; }
+  if (type !== 1 || dv.byteLength < 6) return;
+  const n = Math.min(dv.getUint8(1), Math.floor((dv.byteLength - 6) / 12)), seq = dv.getUint32(2, true);
+  const g = new Int16Array(6);
+  for (let j = 0; j < n; j++) {
+    const sq = seq + j;
+    if (live.seqs[sq % LRING] === sq) continue;           // already have it (resent after a reconnect)
+    for (let k = 0; k < 6; k++) g[k] = dv.getInt16(6 + j * 12 + 2 * k, true);
+    liveSample(sq, g);
+  }
+  live.rx += n;
+  if (live.pendingCaps.length) liveTryCaps();
+}
+
+const ringAt = (sq, k) => live.ring[(sq % LRING) * 6 + k];
+
+// Per sample: store it, and work out the live values.
+function liveSample(sq, g) {
+  const I = live.info || DEFAULT_INFO, slot = sq % LRING, dt = 1 / I.odr, AL = I.alsb, GL = I.glsb;
+  if (live.prev >= 0 && sq !== live.prev + 1) { live.q = null; live.stillRun = 0; live.run = 0; live.trig = -1; }   // gap: start over
+  live.prev = sq; live.run++;
+  live.ring.set(g, slot * 6); live.seqs[slot] = sq; if (sq > live.last) live.last = sq;
+  const ax = g[3] * AL, ay = g[4] * AL, az = g[5] * AL, a = Math.hypot(ax, ay, az);
+  const gxr = g[0] * GL, gyr = g[1] * GL, gzr = g[2] * GL;
+  live.fAbs[slot] = a; live.fComp[slot] = NaN; live.fSpinC[slot] = NaN;
+  live.fSpinG[slot] = Math.abs(gzr - I.bias[2]) / 6;
+  // The speed being added up from the last still moment (150 ms with the gyro under 25 deg/s and the force
+  // 1 +- 0.15 g). The reference window ends 100 ms back, because the first moments of a pull still pass that
+  // test (0.5 g sideways changes the force's size by only 0.14 g) and would tilt "down"; then catch up to now.
+  const still = Math.hypot(gxr, gyr, gzr) <= 25 && Math.abs(a - 1) <= 0.15, win = Math.floor(0.15 / dt), lag = Math.round(0.1 / dt);
+  live.stillRun = still ? live.stillRun + 1 : 0;
+  if (live.stillRun >= win + lag) {
+    const m = [0, 0, 0, 0, 0, 0];
+    for (let k = lag; k < lag + win; k++) for (let j = 0; j < 6; j++) m[j] += ringAt(sq - k, j);
+    live.q = Q4.up(m[3] / win * AL, m[4] / win * AL, m[5] / win * AL);
+    const b = [m[0] / win * GL, m[1] / win * GL, m[2] / win * GL], P4 = I.logVer >= 4 ? relRules(I) : null;
+    // firmware v4: this gyro offset only within biasTol of the disc's own (a hand's tremor is not offset)
+    live.bias = P4 && P4.biasTol > 0 && Math.hypot(b[0] - I.bias[0], b[1] - I.bias[1], b[2] - I.bias[2]) > P4.biasTol ? I.bias.slice() : b;
+    live.v = [0, 0, 0]; live.integN = 0; live.refSeq = sq - lag; live.peakRun = 0; live.rel = null; live.trig = -1;
+    for (let k = sq - lag + 1; k <= sq; k++) liveStep(k, I, dt);
+  } else if (live.q) {
+    liveStep(sq, I, dt);
+    if (++live.integN > 3 * I.odr) live.q = null;               // 3 s without a still moment: drifting, stop
+  }
+  // Firmware v4: the disc's own trigger after the still moment (force over trigG or rotation over trigDps; none
+  // in calibration mode). Its release scan starts there, and the pull's peak counts from prePeak samples before
+  // it. A capture with no release ends 832 readings (2 s) after its trigger; the next reading may trigger again.
+  if (I.logVer >= 4 && live.q && !live.rel) {
+    if (live.trig >= 0 && sq - live.trig > 832) live.trig = -1;
+    if (live.trig < 0 && !(I.calFlags & 1) && (a >= I.trigG || Math.hypot(gxr, gyr, gzr) >= I.trigDps)) { live.trig = sq; live.peak4 = -1; }
+  }
+  const held = live.rel && sq - live.rel.seq < 3 * I.odr, hz = Math.hypot(live.v[0], live.v[1]);
+  live.fSpeed[slot] = held ? live.rel.speed : !live.rel && live.q ? Math.hypot(live.v[0], live.v[1], live.v[2]) * 2.2369363 : NaN;
+  live.fLaunch[slot] = held ? live.rel.launch : !live.rel && live.q && hz > 0.5 ? Math.atan2(live.v[2], hz) * R2D : NaN;
+  live.fState[slot] = held ? 3 : live.stillRun >= win + lag ? 1 : live.q && !live.rel ? 2 : 0;
+  // Look-ahead values for the sample 35 readings ago: like the disc's release test, the steady in-plane
+  // (centripetal) part at sample c is the median over [c, c + 36), so these trail "now" by 87 ms.
+  if (live.run < RW) return;
+  const c = sq - RW + 1, cs = c % LRING, xs = new Float64Array(RW), ys = new Float64Array(RW);
+  let gzMax = 0, gzSum = 0, hMax = 0, hSum = 0;
+  for (let k = 0; k < RW; k++) {
+    xs[k] = ringAt(c + k, 3) * AL; ys[k] = ringAt(c + k, 4) * AL;
+    const z = Math.abs(ringAt(c + k, 2)) * GL; gzSum += z; if (z > gzMax) gzMax = z;
+    if (k < 10) { hSum += z; if (z > hMax) hMax = z; }
+  }
+  xs.sort(); ys.sort();
+  const mx = 0.5 * (xs[RW / 2 - 1] + xs[RW / 2]), my = 0.5 * (ys[RW / 2 - 1] + ys[RW / 2]);
+  const comp = k => Math.hypot(ringAt(k, 3) * AL - mx, ringAt(k, 4) * AL - my, ringAt(k, 5) * AL);
+  const slide = comp(c), rl = live.rel;
+  let hand = slide;
+  if (rl && c >= rl.seq + 12 && rl.imp == null) {
+    // in flight the disc's impact test (impactAfter) keeps the steady part from just after release fixed
+    if (c === rl.seq + 12) {
+      rl.fix = [mx, my];
+      const m = []; for (let k = c; k < c + RW; k++) m.push(comp(k));
+      rl.impLim = Math.min(4, medianOf(m) + 1.5);
+    }
+    if (rl.fix) {
+      hand = Math.hypot(ringAt(c, 3) * AL - rl.fix[0], ringAt(c, 4) * AL - rl.fix[1], ringAt(c, 5) * AL);
+      if (hand > rl.impLim) { rl.imp = c; live.impMarks.push(c); if (live.impMarks.length > 12) live.impMarks.shift(); }
+    }
+  }
+  live.fComp[cs] = hand;
+  if (I.radius > 0.0005 && slide < I.freeG && Math.abs(ringAt(c, 2)) * GL > 100)
+    live.fSpinC[cs] = Math.sqrt(Math.hypot(mx, my) * GMS / I.radius) * 60 / (2 * Math.PI);
+  // the disc's release test (releaseAt) at candidate c, while the speed is being added up. Firmware v4 (log
+  // version 4): candidates from the disc's trigger on, the pull must have peaked over relPeakG (2 g) instead of
+  // the trigger level - counted from prePeak samples (0.5 s) before the trigger, as the disc does - and the disc
+  // must spin freely. Older firmware: the peak counts from the still moment.
+  if (!live.q || live.rel || c <= live.refSeq) return;
+  const v4 = I.logVer >= 4, P = v4 ? relRules(I) : null;
+  if (v4) {
+    if (live.trig < 0 || c < live.trig) return;
+    if (live.peak4 < 0) {
+      live.peak4 = 0;
+      for (let k = Math.max(0, live.trig - Math.min(P.prePeak, 415)); k < live.trig; k++) if (live.seqs[k % LRING] === k) live.peak4 = Math.max(live.peak4, live.fAbs[k % LRING]);
+    }
+    live.peak4 = Math.max(live.peak4, live.fAbs[cs]);
+    if (live.peak4 <= P.relPeakG) return;
+  } else {
+    live.peakRun = Math.max(live.peakRun, live.fAbs[cs]);
+    if (live.peakRun <= I.trigG) return;
+  }
+  for (let k = c; k < c + 10; k++) if (comp(k) > I.freeG) return;              // hand force gone for 25 ms
+  if (gzMax < 0.98 * GYRO_MAX) {                                               // steady part fits the spin
+    const w = gzSum / RW * D2R; if (Math.hypot(mx, my) > w * w * I.radius / GMS * 1.5 + 1.5) return;
+  } else if (v4 && hMax < 0.98 * GYRO_MAX) {                                   // v4: gyro maxed only later: the 25 ms on its own
+    const hx = medianOf(Array.from({ length: 10 }, (_, k) => ringAt(c + k, 3) * AL)), hy = medianOf(Array.from({ length: 10 }, (_, k) => ringAt(c + k, 4) * AL));
+    const w = hSum / 10 * D2R; if (Math.hypot(hx, hy) > w * w * I.radius / GMS * 1.5 + 1.5) return;
+  }
+  for (let k = c + 10; k < c + 30; k++) if (comp(k) > I.trigG) return;          // and no more pulling after
+  if (v4 && P.relMinRpm > 0) {                                                 // v4: steady spin, one direction (raw gyro)
+    const m = Math.min(P.steadyN, RW); let sum = 0, lo = 1e9, hi = 0, pos = 0, neg = 0;
+    for (let k = c; k < c + m; k++) { const z = ringAt(k, 2) * GL, a = Math.abs(z); sum += a; lo = Math.min(lo, a); hi = Math.max(hi, a); if (z > 0) pos++; else neg++; }
+    const mean = sum / m;
+    if (mean < P.relMinRpm * 6 || (pos && neg) || hi - lo > 0.3 * mean + 60) return;
+  }
+  // left the hand at c: hold speed and angles from there
+  const h = c % 64, qa = live.qHist.subarray(h * 4, h * 4 + 4), va = live.vHist.subarray(h * 3, h * 3 + 3);
+  let gzs = 0; for (let k = c + 12; k < c + RW; k++) gzs += ringAt(k, 2) * GL - live.bias[2];
+  live.rel = { seq: c, ...discAngles(new Q4(qa[0], qa[1], qa[2], qa[3]), va[0], va[1], va[2], gzs > 0) };
+  live.rels.push(live.rel); if (live.rels.length > 12) live.rels.shift();
+  for (let k = c; k <= sq; k++) { const s2 = k % LRING; live.fSpeed[s2] = live.rel.speed; live.fLaunch[s2] = live.rel.launch; live.fState[s2] = 3; }
+  live.q = null;
+}
+
+// One step of adding up, as the disc does over a pull: turn by the gyro, rotate the force into world axes,
+// take off gravity, add to the velocity. Kept for the last 64 readings so the release can be looked up later.
+function liveStep(k, I, dt) {
+  const GL = I.glsb, AL = I.alsb, q = live.q, v = live.v;
+  q.integ((ringAt(k, 0) * GL - live.bias[0]) * D2R, (ringAt(k, 1) * GL - live.bias[1]) * D2R, (ringAt(k, 2) * GL - live.bias[2]) * D2R, dt);
+  const w = q.rot(ringAt(k, 3) * AL, ringAt(k, 4) * AL, ringAt(k, 5) * AL);
+  v[0] += w[0] * GMS * dt; v[1] += w[1] * GMS * dt; v[2] += (w[2] - 1) * GMS * dt;
+  const h = k % 64; live.qHist.set([q.w, q.x, q.y, q.z], h * 4); live.vHist.set(v, h * 3);
+}
+
+// Steps 6-7 of the disc's maths: speed, launch, hyzer and nose from the velocity and the disc's attitude at release.
+function discAngles(q, vx, vy, vz, ccw) {
+  const horiz = Math.hypot(vx, vy), launch = Math.atan2(vz, horiz) * R2D, [nx, ny, nz] = q.rot(0, 0, 1);
+  let hyzer, nose;
+  if (horiz > 0.5) {                               // against the flight direction (left = up x forward)
+    const fx = vx / horiz, fy = vy / horiz, lx = -fy, ly = fx;
+    hyzer = Math.atan2(-(nx * lx + ny * ly), nz) * R2D;
+    nose = Math.atan2(-(nx * fx + ny * fy), nz) * R2D - launch;
+  } else { hyzer = Math.atan2(-ny, nz) * R2D; nose = Math.atan2(-nx, nz) * R2D; }
+  if (!ccw) hyzer = -hyzer;                        // clockwise spin fades left: left edge down = hyzer
+  return { speed: Math.hypot(vx, vy, vz) * 2.2369363, launch, hyzer, nose, normal: [nx, ny, nz] };
+}
+
+// The new tracker (track.js) on the same readings: the force through the stretch the accelerometer maxed out, the spin
+// past the gyro's top (the wobble's turning rate, the off-centre force) and its own release point - where the readings
+// settle into free flight, searched from where the spin passes 300 rpm (the disc's can land on the net). What slower
+// throws teach about this disc (the wobble ratio kI, the sensor's radius) is shared with the 3D page (same storage).
+// Samples per second by the disc's own clock: pairs of this boot's info packets 8-30 s apart (samples counted /
+// milliseconds). Standby or a calibration stops the count while the clock runs on, so a pair spanning one reads low:
+// only 405-430 counts, and the middle value once two agree within 0.3 %; until then 418.6, what this disc measured.
+function discRate(I, list = live.infos) {
+  const mine = list.filter(x => x.boot === I.boot).sort((a, b) => a.millis - b.millis), rs = [];
+  for (let i = 0; i < mine.length; i++) for (let j = i + 1; j < mine.length; j++) {
+    const span = mine[j].millis - mine[i].millis; if (span < 8000) continue; if (span > 30000) break;
+    const r = (mine[j].seq - mine[i].seq) * 1000 / span; if (r > 405 && r < 430) rs.push(r); break;
+  }
+  if (rs.length < 2) return 418.6;
+  const m = DiscTrack.median(rs); return rs.filter(r => Math.abs(r - m) < 0.003 * m).length >= 2 ? m : 418.6;
+}
+function rebuild(S, info, c) {
+  if (!window.DiscTrack || !S || !info || c.n < 445) return null;
+  const L = DiscTrack.learned(settings.disc && settings.disc.name || "");
+  const I = { alsb: info.alsb, glsb: info.glsb, bias: info.bias, radius: info.radius > 0.0005 ? info.radius : L.radius, odr: info.odr,
+              rate: discRate(info), kI: L.kI || 0.93, kAero: L.kAero };
+  try {
+    const r = DiscTrack.reconstruct(S, I, { iRel: c.rel < c.n ? c.rel : undefined, spinRpm: c.res[1] > 0 ? c.res[1] : undefined }), x = r.info;
+    return { res: r, speed: r.six.speed, spin: r.six.spin, hyzer: r.six.hyzer, nose: r.six.nose, launch: r.six.launch, rel: x.iRel,
+             relFound: x.relSrc === "settled", imp: x.iImp, spinSrc: x.spinSrc, atLeast: !!(x.spin && x.spin.atLeast), gap: x.longestGap,
+             ccw: x.ccw, wobble: x.wobble, speedSrc: x.speedSrc, speedPull: x.speedPull ? x.speedPull * 2.2369363 : null,
+             iStart: r.iStart, wz: r.wz, vel: r.vel, fx: r.fx, fy: r.fy, fz: r.fz, fit: x.fitWindow || null, rate: 1 / x.dt };
+  } catch (err) { console.warn("rebuilding the throw failed", err); return null; }
+}
+// A throw's rebuild, worked out the first time something needs it: throws reloaded from the log wait until they are
+// shown, a new throw right after its own numbers are on screen. Sx: the capture plus the stream's readings after it.
+const nwOf = e => e.nwPending ? null : e.nw !== undefined ? e.nw : (e.nw = rebuild(e.Sx || e.S, e.info, e.c));
+const spinTxt = nw => `${nw.atLeast ? "≥ " : ""}${nw.spin.toFixed(0)} rpm`;
+// The new tracker (track.js) on the same readings: the force through the stretch the accelerometer maxed out, the spin
+// past the gyro's top (the wobble's turning rate, the off-centre force) and its own release point - where the readings
+// settle into free flight, searched from where the spin passes 300 rpm (the disc's can land on the net). The disc's
+// recording stops ~6 readings before the hit it found, so the rebuild also gets up to EXTRA of the stream's readings
+// after it. What slower throws teach about this disc (kI, the sensor's radius) is shared with the 3D page (track.js).
+const EXTRA = 160;
+// A throw's results packet arrived: cut its samples out of the live buffer and redo the maths here, step by step.
+function liveTryCaps() {
+  while (live.pendingCaps.length) {
+    const c = live.pendingCaps[0], end = c.start + c.n - 1, age = performance.now() - c.at;
+    if (live.last < end + EXTRA && age < (live.last >= end ? 1500 : 15000)) return;
+    live.pendingCaps.shift();
+    const S = new Int16Array(c.n * 6); let missing = 0;
+    for (let i = 0; i < c.n; i++) {
+      const sq = c.start + i, sl = sq % LRING;
+      if (live.seqs[sl] === sq) S.set(live.ring.subarray(sl * 6, sl * 6 + 6), i * 6);
+      else { missing++; if (i) S.copyWithin(i * 6, (i - 1) * 6, i * 6); }
+    }
+    let an = null;
+    const info = infoAt(live.infos, live.info, c.start + c.n) || DEFAULT_INFO;
+    try { an = analyzeCapture(S, info); } catch (e) { console.error("analysis failed", e); }
+    const rr = live.rels.find(r => Math.abs(r.seq - (c.start + c.rel)) < 60);
+    let nx = c.n; while (nx < c.n + EXTRA && live.seqs[(c.start + nx) % LRING] === c.start + nx) nx++;
+    const Sx = new Int16Array(nx * 6); Sx.set(S);
+    for (let i = c.n; i < nx; i++) { const sl = (c.start + i) % LRING; Sx.set(live.ring.subarray(sl * 6, sl * 6 + 6), i * 6); }
+    const ent = { id: `${info.boot}-${c.start}-${c.tMs}`, c, S, Sx, an, nwPending: true, missing, at: Date.now(), info, label: null,
+                  liveEst: rr ? { speed: rr.speed, launch: rr.launch, hyzer: rr.hyzer, nose: rr.nose } : null };
+    // v4: a spinless capture that ran to the 3 s limit is handling ("quiet": the disc raises no banner for it and
+    // keeps no record of it unless the stream is on). It shows in the graphs and the list, but it does not take
+    // over "the last throw" and is kept in the throw log only once it is labeled.
+    const P = info.logVer >= 4 ? relRules(info) : null;
+    ent.quiet = !!P && !c.counted && c.end === 3 && c.res[1] < 0.5 * P.relMinRpm;
+    ent.flight = capFlight(ent);
+    live.caps.push(ent);
+    if (live.caps.length > 40) live.caps.shift();
+    // the rebuild (a tenth of a second or so) once the disc's own numbers are on screen; then it teaches, is logged,
+    // and - with "rebuilt" on - goes to the simulator to be flown
+    setTimeout(() => {
+      try {
+        ent.nwPending = false; const nw = nwOf(ent); ent.flight = capFlight(ent);
+        if (nw && !ent.quiet && missing <= 0.2 * c.n) try { DiscTrack.teach(ent.id, c, nw.res, settings.disc && settings.disc.name || ""); } catch (err) { console.warn("learning", err); }
+        if (rebuilding() && !ent.quiet) {
+          if (c.counted) { held.caps.push({ ent, at: performance.now() }); matchHeld(); setTimeout(matchHeld, HOLD_CAP + 50); }
+          else if (clearThrow(nw)) { const e = addThrow(throwFrom(null, ent), false); if (e) play(e, true); }
+        }
+      } finally {
+        if (!ent.quiet) logSave(ent, true);
+        if (live.sel === ent) { renderBreakdown(); renderLastThrow(); renderLog(); }
+      }
+    }, 0);
+    if (ent.quiet) { ent.logged = false; if (live.sel) { renderThrowSel(); continue; } }
+    live.sel = ent;
+    renderThrowSel(); renderBreakdown(); renderLastThrow(); renderLog(true);
+  }
+}
+
+// ---- the disc's analysis (throw_metrics.h), in JavaScript, keeping every intermediate step ----
+// A capture is analysed with the rules of the firmware that recorded it (I.logVer). Log version 4 changed the
+// release test, the pull's peak, the no-still-moment fallback, the per-throw gyro offset, the short-flight window
+// and the speed (lever arm); version 3 and older captures keep the version-3 rules exactly.
+const FL = { VALID: 1, GYRO_Z_SAT: 2, ACCEL_SAT: 4, NO_RELEASE: 8, NO_STATIC: 16, SPIN_FROM_ACC: 32, SHORT_FLIGHT: 64, SPIN_CCW: 128,
+             SEED_RELAXED: 256, BIAS_KEPT: 512, LEVER_ARM: 1024, WAVE_REJECTED: 2048 };   // 256-2048: v4 diagnostics
+function analyzeCapture(S, I) {
+  const n = S.length / 6, dt = 1 / I.odr, AL = I.alsb, GL = I.glsb, SAT = 32200;
+  const v4 = I.logVer >= 4, P = v4 ? relRules(I) : null;
+  const ax = i => S[i * 6 + 3] * AL, ay = i => S[i * 6 + 4] * AL, az = i => S[i * 6 + 5] * AL;
+  const gx = i => S[i * 6] * GL, gy = i => S[i * 6 + 1] * GL, gz = i => S[i * 6 + 2] * GL;
+  const sat = v => v >= SAT || v <= -SAT, mag = i => Math.hypot(ax(i), ay(i), az(i));
+  const R = { n, flags: 0 };
+  if (n < 40) return R;
+  const hold = 10, L = 36, gap = 20, settle = 12, flightN = 104;
+  for (let i = 0; i < n; i++) if (sat(S[i * 6 + 3]) || sat(S[i * 6 + 4]) || sat(S[i * 6 + 5])) { R.flags |= FL.ACCEL_SAT; break; }
+  const inMed = (a, b) => { const xs = [], ys = []; for (let k = a; k < b && xs.length < 64; k++) { xs.push(ax(k)); ys.push(ay(k)); } return [medianOf(xs), medianOf(ys)]; };
+  const comp = (k, mx, my) => Math.hypot(ax(k) - mx, ay(k) - my, az(k));
+  // v4: a disc in flight spins freely - steady, one direction, fast enough: over steadyN samples from i, raw gyro z
+  const steady = i => {
+    const m = Math.min(i + P.steadyN, n); let sum = 0, lo = 1e9, hi = 0, pos = 0, neg = 0;
+    for (let k = i; k < m; k++) { const g = gz(k), a = Math.abs(g); sum += a; if (a < lo) lo = a; if (a > hi) hi = a; if (g > 0) pos++; else neg++; }
+    const mean = sum / (m - i);
+    return { rpm: mean / 6, ok: !(mean < P.relMinRpm * 6 || (pos && neg) || hi - lo > 0.3 * mean + 60) };
+  };
+  const releaseAt = i => {
+    if (i + hold > n) return false;
+    const e = Math.min(i + L, n), [mx, my] = inMed(i, e);
+    for (let k = i; k < i + hold; k++) if (comp(k, mx, my) > I.freeG) return false;
+    let gzMax = 0, gzSum = 0, hMax = 0, hSum = 0;
+    for (let k = i; k < e; k++) { const v = Math.abs(gz(k)); gzSum += v; if (v > gzMax) gzMax = v; if (k < i + hold) { hSum += v; if (v > hMax) hMax = v; } }
+    if (gzMax < 0.98 * 32767 * GL) { const w = gzSum / (e - i) * D2R; if (Math.hypot(mx, my) > w * w * I.radius / GMS * 1.5 + 1.5) return false; }
+    else if (v4 && hMax < 0.98 * 32767 * GL) {      // v4: the gyro maxed out only later in the look-ahead: the hold on its own
+      const [hx, hy] = inMed(i, i + hold), w = hSum / hold * D2R; if (Math.hypot(hx, hy) > w * w * I.radius / GMS * 1.5 + 1.5) return false;
+    }
+    const ge = Math.min(i + hold + gap, n);
+    for (let k = i + hold; k < ge; k++) if (comp(k, mx, my) > I.trigG) return false;
+    if (v4 && P.relMinRpm > 0 && !steady(i).ok) return false;
+    return true;
+  };
+  // 2. release, scanning forward from the trigger. v4: the pull's peak counts from prePeak samples (0.5 s) BEFORE
+  // the trigger, against relPeakG - a gentle flick trips the gyro trigger after its force has peaked.
+  const i0 = 415 < n ? 415 : 0; let iRel = 0, iPeak = i0, found = false, run = 0;
+  const p0 = v4 ? (i0 > P.prePeak ? i0 - P.prePeak : 0) : i0, gate = v4 ? P.relPeakG : I.trigG;
+  for (let i = p0; i < i0; i++) { const m = mag(i); if (m > run) run = m; }
+  for (let i = i0; i + hold < n; i++) { const m = mag(i); if (m > run) { run = m; iPeak = i; } if (run > gate && releaseAt(i)) { iRel = i; found = true; break; } }
+  if (!found) { iRel = iPeak; R.flags |= FL.NO_RELEASE; }
+  let peak = 0; for (let i = p0; i <= iRel && i < n; i++) peak = Math.max(peak, mag(i));
+  // the hand force the release test looked at (steady in-plane part removed, look-ahead median)
+  // 3. still moment
+  let bias = I.bias.slice(), iStart = 0, stillAt = -1, seedAt = -1, seedKind = "", q;
+  const win = Math.floor(0.15 / dt), limit = iRel > win ? iRel - win : 0;
+  for (let i = 0; i + win < n && i < limit; i++) {
+    const sm = [0, 0, 0, 0, 0, 0]; let still = true;
+    for (let k = 0; k < win; k++) {
+      const a = [ax(i + k), ay(i + k), az(i + k)], gg = [gx(i + k), gy(i + k), gz(i + k)];
+      if (Math.hypot(...gg) > 25 || Math.abs(Math.hypot(...a) - 1) > 0.15) { still = false; break; }
+      sm[0] += a[0]; sm[1] += a[1]; sm[2] += a[2]; sm[3] += gg[0]; sm[4] += gg[1]; sm[5] += gg[2];
+    }
+    if (still) {
+      q = Q4.up(sm[0] / win, sm[1] / win, sm[2] / win);
+      const b = [sm[3] / win, sm[4] / win, sm[5] / win];
+      // v4: the gyro offset measured here is used only within biasTol of the disc's own (a hand's tremor is not offset)
+      if (!v4 || P.biasTol <= 0 || Math.hypot(b[0] - I.bias[0], b[1] - I.bias[1], b[2] - I.bias[2]) <= P.biasTol) bias = b;
+      else R.flags |= FL.BIAS_KEPT;
+      iStart = i + win; stillAt = i; break;
+    }
+  }
+  if (stillAt < 0 && !v4) { R.flags |= FL.NO_STATIC; q = Q4.up(ax(0), ay(0), az(0)); iStart = 0; }
+  else if (stillAt < 0) {
+    // v4: no still moment (a quick re-throw, a fidgety hand). "Down" from the LATEST quiet 0.10 s (gyro under
+    // 60 °/s, force within 1 ± 0.25 g) moved 20 samples earlier, else from the least-moving 0.10 s. The gyro
+    // offset stays the disc's own.
+    R.flags |= FL.NO_STATIC;
+    const w2 = Math.max(8, Math.floor(0.10 / dt)), top = Math.min(iRel > w2 ? iRel - w2 : 0, n - w2);
+    const gm = k => Math.hypot(gx(k), gy(k), gz(k));
+    const quiet = a => { for (let k = a; k < a + w2 && k < n; k++) if (!(gm(k) < 60) || !(Math.abs(mag(k) - 1) < 0.25)) return false; return true; };
+    let bi = -1;
+    for (let i = top - 1; i >= 0; i--) if (quiet(i)) { bi = i; break; }
+    if (bi >= 0) { bi = bi > 20 ? bi - 20 : 0; R.flags |= FL.SEED_RELAXED; seedKind = "quiet"; }
+    else {
+      let best = 1e9; bi = 0; seedKind = "least";
+      for (let i = 0; i < Math.max(top, 1); i++) {
+        let gMax = 0, dMax = 0;
+        for (let k = i; k < i + w2 && k < n; k++) { const g = gm(k), d = Math.abs(mag(k) - 1); if (g > gMax) gMax = g; if (d > dMax) dMax = d; }
+        const sc = gMax / 60 + dMax / 0.25; if (sc < best) { best = sc; bi = i; }
+      }
+    }
+    let sx = 0, sy = 0, sz = 0;
+    for (let k = bi; k < bi + w2 && k < n; k++) { sx += ax(k); sy += ay(k); sz += az(k); }
+    q = Q4.up(sx / w2, sy / w2, sz / w2); iStart = bi + w2; seedAt = bi;
+  }
+  // 4. free flight: release + settle .. impact
+  const impactAfter = rel => {
+    const s0 = rel + settle; if (s0 + 2 >= n) return n;
+    const e = Math.min(s0 + L, n), [mx, my] = inMed(s0, e), m = [];
+    for (let k = s0; k < e && m.length < 64; k++) m.push(comp(k, mx, my));
+    const lim = Math.min(4.0, medianOf(m) + 1.5); R.impLim = lim; R.impMed = [mx, my];
+    for (let k = s0; k < n; k++) if (comp(k, mx, my) > lim) return k;
+    return n;
+  };
+  const imp = impactAfter(iRel);
+  // the hand force each test looked at: before the flight the release test's look-ahead median,
+  // in flight up to the impact the impact test's fixed one
+  R.hand = new Float32Array(n).fill(NaN);
+  for (let i = i0; i < n; i++) {
+    const [mx, my] = R.impMed && i >= iRel + settle && i <= imp ? R.impMed : inMed(i, Math.min(i + L, n));
+    R.hand[i] = comp(i, mx, my);
+  }
+  let f0, f1;
+  if (!v4) {
+    f0 = Math.min(iRel + settle, n - 1); const fEnd = imp > f0 + 3 ? imp - 3 : f0;
+    f1 = Math.min(f0 + flightN, fEnd);
+    if (f1 <= f0 + 20) { R.flags |= FL.SHORT_FLIGHT; f1 = Math.min(f0 + 21, n); }
+  } else {
+    // v4: the window never runs past the impact. On a short flight the settle shrinks (down to 3 samples) while 8
+    // clean samples remain after it; at least 6 samples are kept, the ones just before the impact.
+    const fEnd = Math.max(iRel + 1, Math.min(n, imp - 3)), avail = fEnd - iRel;
+    let st = settle; if (avail < st + 8) st = Math.max(3, Math.min(st, avail - 8));
+    f0 = Math.min(iRel + st, fEnd - 1); f1 = Math.min(f0 + flightN, fEnd);
+    if (f1 - f0 < 6) f0 = Math.max(iRel + 1, f1 - 6);
+    if (f1 <= f0 + 20) R.flags |= FL.SHORT_FLIGHT;
+  }
+  let spinSum = 0, gzSigned = 0, mgx = 0, mgy = 0, satCount = 0, cnt = 0;
+  for (let i = f0; i < f1; i++) {
+    const a = gx(i) - bias[0], b = gy(i) - bias[1], c = gz(i) - bias[2];
+    if (sat(S[i * 6 + 2])) satCount++;
+    spinSum += Math.abs(c); gzSigned += c; mgx += a; mgy += b; cnt++;
+  }
+  if (cnt) { mgx /= cnt; mgy /= cnt; }
+  const cone = axial => {
+    if (axial < 1) return 0; let sq = 0, c = 0;
+    for (let i = f0; i < f1; i++) { const a = gx(i) - bias[0] - mgx, b = gy(i) - bias[1] - mgy; const w = Math.atan2(Math.hypot(a, b), 2 * axial) * R2D; sq += w * w; c++; }
+    return c ? Math.sqrt(sq / c) : 0;
+  };
+  const spinDps = cnt ? spinSum / cnt : 0;
+  let spin = spinDps / 6, wobble = cone(spinDps), src = 0;
+  if (cnt && satCount > Math.floor(cnt / 5)) R.flags |= FL.GYRO_Z_SAT;
+  const sgn = gzSigned > 0 ? 1 : -1;                // spin direction, as in step 7
+  // spin from the accelerometer: drag wave (phase fit) and centripetal sqrt(a / r)
+  const wave = (() => {
+    const a = f0, b = f1; if (v4 ? b < a + 6 : b <= a + 24) return { rpm: 0, mx: 0, my: 0, amp: 0 };
+    const nn = b - a; let mx = 0, my = 0, amp = 0;
+    for (let i = a; i < b; i++) { mx += ax(i); my += ay(i); } mx /= nn; my /= nn;
+    if (b <= a + 24) return { rpm: 0, mx, my, amp: 0 };   // v4: the steady mean is kept; too short for the phase fit
+    for (let i = a; i < b; i++) amp += Math.hypot(ax(i) - mx, ay(i) - my); amp /= nn;
+    if (amp < 0.04) return { rpm: 0, mx, my, amp };
+    const unwrap = () => { const out = []; let prev = Math.atan2(ay(a) - my, ax(a) - mx), acc = prev;
+      for (let i = a; i < b; i++) { const th = Math.atan2(ay(i) - my, ax(i) - mx); let d = th - prev; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; acc += d; prev = th; out.push(acc); } return out; };
+    const ph = unwrap(); let St = 0, Sa = 0, Stt = 0, Sta = 0;
+    ph.forEach((v, k) => { const t = k * dt; St += t; Sa += v; Stt += t * t; Sta += t * v; });
+    const den = nn * Stt - St * St; if (den <= 0) return { rpm: 0, mx, my, amp };
+    const slope = (nn * Sta - St * Sa) / den, icpt = (Sa - slope * St) / nn;
+    if (Math.abs(slope) * nn * dt < 3 * Math.PI) return { rpm: 0, mx, my, amp, revs: Math.abs(slope) * nn * dt / (2 * Math.PI) };
+    let ss = 0; ph.forEach((v, k) => { const r = v - (icpt + slope * k * dt); ss += r * r; });
+    if (Math.sqrt(ss / nn) > 0.6) return { rpm: 0, mx, my, amp, ragged: true };
+    // v4: drag turns AGAINST the spin in the disc's frame; a pattern turning WITH it is fixed to the disc (wobble)
+    if (v4 && slope * sgn > 0) return { rpm: 0, mx, my, amp, wrong: Math.abs(slope) * 60 / (2 * Math.PI) };
+    return { rpm: Math.abs(slope) * 60 / (2 * Math.PI), mx, my, amp };
+  })();
+  if (wave.wrong) R.flags |= FL.WAVE_REJECTED;
+  const centrip = Math.hypot(wave.mx, wave.my) * GMS;
+  const spinC = I.radius > 0.0005 && centrip > 0.2 ? Math.sqrt(centrip / I.radius) * 60 / (2 * Math.PI) : 0;
+  // the radius the disc would learn from this throw (v4: windows over 24 samples only)
+  const rLearn = v4 && f1 > f0 + 24 && !(R.flags & FL.GYRO_Z_SAT) && spin > 120 && spin < 320 && wobble < 12 ? centrip / (spinDps * D2R) ** 2 : 0;
+  if (R.flags & FL.GYRO_Z_SAT) {
+    const w = wave.rpm, c = spinC;
+    if (w > 0 && c > 0) {
+      if (v4 && P.locked && f1 < f0 + 64) { spin = c; src = 2; }   // v4: short window, radius from the calibration page
+      else if (Math.abs(w - c) < 0.15 * w) { spin = 0.5 * (w + c); src = 3; } else { spin = w; src = 1; }
+    }
+    else if (w > 0) { spin = w; src = 1; } else if (c > 0) { spin = c; src = 2; }
+    if (src) { R.flags |= FL.SPIN_FROM_ACC; wobble = cone(spin * 6); }
+  }
+  // 5. the pull: fill the clipped gyro, then add up rotation and velocity from the still moment to release
+  let c0 = -1, g0 = 0, gT = 0, cm = 1;
+  if (found && src) {
+    for (let i = iStart; i <= iRel && i < n; i++) if (sat(S[i * 6 + 2])) { c0 = i; break; }
+    if (c0 >= 0) {
+      g0 = c0 > iStart ? gz(c0 - 1) - bias[2] : sgn * 32767 * GL; gT = sgn * spin * 6;
+      if (Math.abs(gT) > Math.abs(g0)) cm = iRel - c0 + 1; else c0 = -1;
+    }
+  }
+  R.speedTrace = new Float32Array(n).fill(NaN); R.fill = new Float32Array(n).fill(NaN);
+  let vx = 0, vy = 0, vz = 0;
+  for (let i = iStart; i <= iRel && i < n; i++) {
+    const filled = c0 >= 0 && i >= c0 && sat(S[i * 6 + 2]);
+    const gzd = filled ? g0 + (gT - g0) * (i - c0 + 1) / cm : gz(i) - bias[2];
+    if (filled) R.fill[i] = Math.abs(gzd) / 6;
+    q.integ((gx(i) - bias[0]) * D2R, (gy(i) - bias[1]) * D2R, gzd * D2R, dt);
+    const w = q.rot(ax(i), ay(i), az(i));
+    vx += w[0] * GMS * dt; vy += w[1] * GMS * dt; vz += (w[2] - 1) * GMS * dt;
+    R.speedTrace[i] = Math.hypot(vx, vy, vz) * 2.2369363;
+  }
+  // 5b. v4: the lever arm. That is the SENSOR's velocity, and the sensor sits r off the spin axis, so it also moves
+  // at w x r. r comes from this flight's steady in-plane force (m = -w² r / g). Only with the release found, the gyro
+  // in range over the 20 samples up to it, a flight window of 6+ samples and r under 30 mm.
+  let lever = 0, leverR = null;
+  if (v4 && P.lever && found && spin > 0 && f1 >= f0 + 6) {
+    let clipped = false;
+    for (let k = iRel > 20 ? iRel - 20 : 0; k <= iRel && k < n; k++) if (sat(S[k * 6 + 2])) { clipped = true; break; }
+    const w = sgn * spin * 6 * D2R, rx = -wave.mx * GMS / (w * w), ry = -wave.my * GMS / (w * w);
+    if (!clipped && Math.hypot(rx, ry) < 0.03) {
+      const c = q.rot(-w * ry, w * rx, 0), before = Math.hypot(vx, vy, vz);   // w x r in world axes
+      vx -= c[0]; vy -= c[1]; vz -= c[2];
+      lever = (Math.hypot(vx, vy, vz) - before) * 2.2369363; leverR = [rx, ry]; R.flags |= FL.LEVER_ARM;
+    }
+  }
+  // 6-7. disc angles at release, against the flight direction; the spin direction sets the hyzer sign
+  if (gzSigned > 0) R.flags |= FL.SPIN_CCW;
+  const { speed, launch, hyzer, nose, normal } = discAngles(q, vx, vy, vz, gzSigned > 0);
+  // 8. is this actually a throw?
+  const allowNR = (I.sens || 5) <= 2;
+  if (peak > I.minPeak && spin >= I.minSpin && (allowNR || !(R.flags & FL.NO_RELEASE))) R.flags |= FL.VALID;
+  return Object.assign(R, { i0, iRel, found, peak, iPeak, stillAt, iStart, win, imp, f0, f1, spin, spinGyro: spinDps / 6, wobble, src,
+    wave, centrip, spinC, satCount, cnt, c0, cm, g0, gT, speed, launch, hyzer, nose, bias, mgx, mgy, vx, vy, vz, normal, odr: I.odr },
+    v4 ? { v4, rules: P, p0, seedAt, seedKind, relSpin: found ? steady(iRel).rpm : 0, rLearn, lever, leverR } : {});
+}
+
+// ---- drawing ----
+function fitCanvas(cv) {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const w = Math.max(10, Math.round(r.width * dpr)), h = Math.max(10, Math.round(r.height * dpr));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height);
+  return { g, W: r.width, H: r.height };
+}
+const niceStep = (range, target) => { const raw = range / target, p = Math.pow(10, Math.floor(Math.log10(raw || 1))), m = raw / p; return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p; };
+const fmtTick = v => Math.abs(v) >= 1000 ? +(v / 1000).toFixed(1) + "k" : String(+v.toFixed(3));
+const BAND = { pre: "rgba(148,163,184,0.10)", still: "rgba(59,130,246,0.26)", seed: "rgba(56,189,248,0.16)", pull: "rgba(251,146,60,0.20)",
+               settle: "rgba(148,163,184,0.30)", flight: "rgba(52,211,153,0.22)", after: "rgba(248,113,113,0.14)" };
+const COL = { x: "#f87171", y: "#4ade80", z: "#60a5fa", abs: "#cbd5e1", hand: "#fb923c", spinG: "#60a5fa", spinC: "#c084fc", speed: "#fbbf24", fill: "#e879f9", rebuilt: "#ff6b3d" };
+const FONT = "11px system-ui, Segoe UI, sans-serif", FONT_B = "600 12px system-ui, Segoe UI, sans-serif", TITLE_H = 17;
+// Sample ranges laid side by side across [x, x + w): a time axis with a break, so the dull stretch between the
+// still moment and the throw can be cut out. A short range still gets `minFrac` of the width.
+function xLayout(ranges, x, w, gap = 18, minFrac = 0.16) {
+  const len = ranges.map(([a, b]) => Math.max(1, b - a)), tot = len.reduce((t, v) => t + v, 0), avail = w - gap * (ranges.length - 1);
+  let fr = len.map(v => v / tot);
+  if (ranges.length > 1) {
+    const small = fr.map(f => f < minFrac), fixed = small.filter(Boolean).length * minFrac;
+    const rest = fr.reduce((t, f, k) => t + (small[k] ? 0 : f), 0);
+    fr = fr.map((f, k) => small[k] ? minFrac : f / rest * (1 - fixed));
+  }
+  let cx = x;
+  return ranges.map(([a, b], k) => { const sg = { a, b, x0: cx, x1: cx + fr[k] * avail }; cx = sg.x1 + gap; return sg; });
+}
+function labelBox(g, text, x, y, color, align = "left") {
+  const tw = g.measureText(text).width, x0 = align === "right" ? x - tw : x;
+  g.fillStyle = "rgba(11, 15, 21, 0.78)"; g.fillRect(x0 - 3, y - 7, tw + 6, 14);
+  g.fillStyle = color; g.textAlign = "left"; g.fillText(text, x0, y);
+  return { x0: x0 - 3, x1: x0 + tw + 3, y };
+}
+const clash = (placed, b) => placed.some(p => Math.abs(p.y - b.y) < 13 && b.x1 > p.x0 && b.x0 < p.x1);
+// One graph. o.segs: the sample ranges shown (xLayout); o.sqrt: a square-root scale, so the few g where release
+// and impact are decided stay readable next to a 20 g pull.
+function panel(g, r, o) {
+  const segs = o.segs || [{ a: o.i0, b: o.i1, x0: r.x, x1: r.x + r.w }], span = o.yMax - o.yMin;
+  const dh = r.h - TITLE_H - 2, base = r.y + r.h;                 // the data stays below the title strip
+  const Y = o.sqrt ? v => base - Math.sqrt(Math.max(0, (v - o.yMin) / span)) * dh : v => base - (v - o.yMin) / span * dh;
+  const Xof = sg => i => sg.x0 + (i - sg.a) / (sg.b - sg.a) * (sg.x1 - sg.x0);
+  g.save();
+  g.font = FONT; g.textBaseline = "middle";
+  for (const sg of segs) {
+    const X = Xof(sg);
+    g.fillStyle = "rgba(255, 255, 255, 0.025)"; g.fillRect(sg.x0, r.y, sg.x1 - sg.x0, r.h);
+    for (const b of o.bands || []) { const x0 = Math.max(sg.x0, X(b.a)), x1 = Math.min(sg.x1, X(b.b)); if (x1 > x0) { g.fillStyle = b.color; g.fillRect(x0, r.y, x1 - x0, r.h); } }
+  }
+  // grid and y numbers, kept out of the title strip
+  const ticks = [];
+  if (o.sqrt) { for (const v of [0, 1, 2, 3, 5, 10, 20, 30, 50]) if (v >= o.yMin && v <= o.yMax) ticks.push(v); }
+  else { const st = niceStep(span, Math.max(3, Math.floor(r.h / 24))); for (let k = Math.ceil(o.yMin / st - 1e-9); k * st <= o.yMax + 1e-9; k++) ticks.push(k * st); }
+  let lastY = Infinity;
+  for (const v of ticks) {
+    const y = Y(v);
+    g.strokeStyle = Math.abs(v) < 1e-9 ? "rgba(255, 255, 255, 0.22)" : "rgba(255, 255, 255, 0.07)"; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(r.x, y); g.lineTo(r.x + r.w, y); g.stroke();
+    if (y - 12 > r.y + TITLE_H && lastY - y >= 13) { g.fillStyle = "#8b97a8"; g.fillText(fmtTick(v), r.x + 3, y - 6); lastY = y; }
+  }
+  // threshold lines; labels that would overlap are moved apart
+  const placed = [];
+  g.save(); g.beginPath(); g.rect(r.x, r.y, r.w, r.h); g.clip();
+  for (const h of o.hlines || []) {
+    const y = Y(h.v); if (y < r.y - 2 || y > r.y + r.h + 2) continue;
+    g.strokeStyle = h.color; g.setLineDash([5, 4]); g.lineWidth = 1; g.beginPath(); g.moveTo(r.x, y); g.lineTo(r.x + r.w, y); g.stroke(); g.setLineDash([]);
+    if (!h.label) continue;
+    const tw = g.measureText(h.label).width, ty = y - 8 < r.y + TITLE_H + 2 ? y + 8 : y - 8;
+    let xr = r.x + r.w - 6;
+    for (let k = 0; k < 8 && clash(placed, { x0: xr - tw - 3, x1: xr + 3, y: ty }); k++)
+      xr = Math.min(...placed.filter(pl => Math.abs(pl.y - ty) < 13).map(pl => pl.x0)) - 10;
+    placed.push(labelBox(g, h.label, xr, ty, h.color, "right"));
+  }
+  g.restore();
+  // the data, one stretch of the time axis at a time
+  for (const sg of segs) {
+    const X = Xof(sg), w = sg.x1 - sg.x0;
+    g.save(); g.beginPath(); g.rect(sg.x0, r.y, w, r.h); g.clip();
+    for (const sr of o.series) {
+      const cols = Math.max(1, Math.floor(w)), per = (sg.b - sg.a) / cols;
+      g.beginPath(); let on = false;
+      if (per <= 1.5) {
+        for (let i = Math.ceil(sg.a); i <= sg.b; i++) { const v = sr.get(i); if (v == null || !isFinite(v)) { on = false; continue; } const x = X(i), y = Y(v); on ? g.lineTo(x, y) : g.moveTo(x, y); on = true; }
+      } else {                                    // several readings per pixel: draw each column's min..max so no peak is lost
+        for (let c = 0; c < cols; c++) {
+          const a = Math.floor(sg.a + c * per), b = Math.floor(sg.a + (c + 1) * per); let mn = Infinity, mx = -Infinity;
+          for (let i = a; i < b; i++) { const v = sr.get(i); if (v == null || !isFinite(v)) continue; if (v < mn) mn = v; if (v > mx) mx = v; }
+          if (mn > mx) { on = false; continue; }
+          const x = sg.x0 + c + 0.5; if (!on) g.moveTo(x, Y(mx)); else g.lineTo(x, Y(mx)); g.lineTo(x, Y(mn)); on = true;
+        }
+      }
+      g.strokeStyle = sr.color; g.lineWidth = sr.width || 1.4; g.setLineDash(sr.dash || []); g.stroke(); g.setLineDash([]);
+    }
+    for (const vl of o.vlines || []) {
+      const x = X(vl.i); if (x < sg.x0 || x > sg.x1) continue;
+      g.strokeStyle = vl.color; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x, r.y); g.lineTo(x, r.y + r.h); g.stroke();
+    }
+    const ptags = [];
+    for (const pt of o.points || []) {
+      const x = X(pt.i), y = Y(pt.v), col = pt.color || "#fff"; if (x < sg.x0 || x > sg.x1) continue;
+      g.fillStyle = col; g.beginPath(); g.arc(x, y, 3.5, 0, 2 * Math.PI); g.fill();
+      const tw = g.measureText(pt.label).width; let ly = Math.max(r.y + TITLE_H + 8, y - 9);
+      while (clash(ptags, { x0: x + 4, x1: x + tw + 10, y: ly }) && ly < r.y + r.h - 8) ly += 14;
+      ptags.push(labelBox(g, pt.label, x + 7, ly, col));
+    }
+    g.restore();
+  }
+  // names of the vertical markers (top graph only), stacked when close together
+  if (o.vlabels) {
+    const tags = placed.slice();
+    for (const sg of segs) {
+      const X = Xof(sg);
+      for (const vl of o.vlines || []) {
+        const x = X(vl.i); if (!vl.label || x < sg.x0 || x > sg.x1) continue;
+        const tw = g.measureText(vl.label).width, left = x + tw + 10 > r.x + r.w;   // near the right edge: name it on the left
+        const x0 = left ? x - tw - 7 : x + 1; let y = r.y + TITLE_H + 9;
+        while (clash(tags, { x0, x1: x0 + tw + 6, y }) && y < r.y + r.h - 8) y += 14;
+        tags.push(labelBox(g, vl.label, left ? x - 4 : x + 4, y, vl.color, left ? "right" : "left"));
+      }
+    }
+  }
+  // breaks in the time axis
+  g.strokeStyle = "#8b97a8"; g.lineWidth = 1.2;
+  for (let k = 1; k < segs.length; k++) {
+    const gx = (segs[k - 1].x1 + segs[k].x0) / 2, cy = r.y + r.h / 2;
+    for (const d of [-3, 3]) { g.beginPath(); g.moveTo(gx + d - 3, cy + 6); g.lineTo(gx + d + 3, cy - 6); g.stroke(); }
+  }
+  // title and legend
+  const items = o.series.filter(sr => sr.label);
+  g.font = FONT_B; let wTot = g.measureText(o.title).width + 18;
+  g.font = "11.5px system-ui, Segoe UI, sans-serif"; for (const sr of items) wTot += g.measureText("■ " + sr.label).width + 10;
+  g.fillStyle = "rgba(11, 15, 21, 0.6)"; g.fillRect(r.x, r.y, Math.min(r.w, wTot), TITLE_H);
+  g.textBaseline = "top"; g.font = FONT_B; g.fillStyle = "#e5e9f0";
+  let x = r.x + 6; g.fillText(o.title, x, r.y + 3); x += g.measureText(o.title).width + 12;
+  g.font = "11.5px system-ui, Segoe UI, sans-serif";
+  for (const sr of items) { g.fillStyle = sr.color; g.fillText("■ " + sr.label, x, r.y + 4); x += g.measureText("■ " + sr.label).width + 10; }
+  g.restore();
+}
+function timeAxis(g, segs, y, odr, zero, fmt) {
+  g.save(); g.font = FONT; g.fillStyle = "#8b97a8"; g.textBaseline = "top"; g.textAlign = "center";
+  for (const sg of segs) {
+    const w = sg.x1 - sg.x0, secs = (sg.b - sg.a) / odr, fit = Math.max(1, w / 110);
+    const st = [0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10].find(v => secs / v <= fit) || 10;
+    let drawn = 0;
+    for (let k = Math.ceil((sg.a - zero) / odr / st - 1e-9); k * st <= (sg.b - zero) / odr + 1e-9; k++, drawn++) {
+      const t = +(k * st).toFixed(3), x = sg.x0 + (zero + t * odr - sg.a) / (sg.b - sg.a) * w;
+      g.fillText(fmt(t), Math.max(sg.x0 + 16, Math.min(sg.x1 - 16, x)), y);
+    }
+    if (!drawn) g.fillText(fmt(+(((sg.a + sg.b) / 2 - zero) / odr).toFixed(2)), (sg.x0 + sg.x1) / 2, y);   // a short stretch: its middle
+  }
+  g.restore();
+}
+const autoRange = (vals, minAbs, cap, sym) => {
+  let m = 0; for (const v of vals) if (isFinite(v)) m = Math.max(m, Math.abs(v));
+  m = Math.min(cap, Math.max(minAbs, m * 1.15)); return sym ? [-m, m] : [0, m];
+};
+// The colored sections of one capture (sample indices + s0).
+function captureBands(an, n, s0 = 0) {
+  const b = [{ a: s0, b: s0 + 415, color: BAND.pre }];
+  if (!an || !an.n) return b;
+  if (an.stillAt >= 0) b.push({ a: s0 + an.stillAt, b: s0 + an.iStart, color: BAND.still });
+  else if (an.seedAt >= 0) b.push({ a: s0 + an.seedAt, b: s0 + an.iStart, color: BAND.seed });   // v4: no still moment, the quiet one used
+  b.push({ a: s0 + an.iStart, b: s0 + an.iRel, color: BAND.pull }, { a: s0 + an.iRel, b: s0 + an.f0, color: BAND.settle },
+         { a: s0 + an.f0, b: s0 + an.f1, color: BAND.flight });
+  if (an.imp < n) b.push({ a: s0 + an.imp, b: s0 + n, color: BAND.after });
+  return b;
+}
+function drawLive() {
+  const cv = $("lpCanvas"), { g, W, H } = fitCanvas(cv);
+  const I = live.info || DEFAULT_INFO, odr = I.odr || 416, haveData = live.last >= 0;
+  $("lpWait").style.display = haveData ? "none" : "";
+  if (!haveData) {
+    $("lpWait").textContent = !connected ? "Connect the disc to see its live readings." : !hasBtStream ? "This disc's firmware can't stream yet – update it." : "Waiting for readings…";
+    return;
+  }
+  const end = live.paused ? live.pauseAt : live.last, span = (+$("lpWin").value || 6) * odr, i0 = end - span, i1 = end;
+  const counts = $("lpCounts").checked, gS = counts ? 1 : I.glsb, aS = counts ? 1 : I.alsb;
+  const raw = k => i => { const sl = i % LRING; return live.seqs[sl] === i ? live.ring[sl * 6 + k] : null; };
+  const arr = A => i => { const sl = i % LRING; return live.seqs[sl] === i ? A[sl] : null; };
+  const sc = (f, k) => i => { const v = f(i); return v == null ? null : v * k; };
+  const sample = (f, a, b) => { const out = [], st = Math.max(1, Math.floor((b - a) / 600)); for (let i = a; i <= b; i += st) { const v = f(i); if (v != null) out.push(v); } return out; };
+  // the sections of each throw the disc reported, and releases spotted here before its results arrived
+  const bands = [], vlines = [], ptSpeed = [], ptSpin = [];
+  for (const e of live.caps) {
+    if (e.old || (e.info && live.info && e.info.boot !== live.info.boot)) continue;         // another session or boot
+    const s0 = e.c.start, an = e.an && e.an.n ? e.an : null; if (s0 + e.c.n < i0 || s0 > i1) continue;
+    bands.push(...captureBands(an, e.c.n, s0));
+    vlines.push({ i: s0 + 415, color: "#94a3b8", label: "trigger" });
+    if (an) {
+      vlines.push({ i: s0 + an.iRel, color: "#fbbf24", label: "release" });
+      const imp = an.imp < an.n ? an.imp : e.c.end === 1 ? e.c.n : -1;    // or where the disc stopped at the impact
+      if (imp >= 0) vlines.push({ i: s0 + imp, color: "#f87171", label: "impact" });
+      ptSpeed.push({ i: s0 + an.iRel, v: e.c.res[0], label: `disc: ${e.c.res[0].toFixed(1)} mph` });
+      ptSpin.push({ i: s0 + Math.round((an.f0 + an.f1) / 2), v: e.c.res[1], label: `disc: ${e.c.res[1].toFixed(0)} rpm` });
+    }
+    if (e.nw && !e.nwPending && $("lpRebuilt").checked) {
+      if (!an || Math.abs(e.nw.rel - an.iRel) >= 3) vlines.push({ i: s0 + e.nw.rel, color: COL.rebuilt, label: "release (rebuilt)" });
+      ptSpeed.push({ i: s0 + e.nw.rel, v: e.nw.speed, label: `rebuilt: ${e.nw.speed.toFixed(1)} mph`, color: COL.rebuilt });
+      ptSpin.push({ i: s0 + Math.min(e.nw.imp, e.nw.rel + 30), v: e.nw.spin, label: `rebuilt: ${spinTxt(e.nw)}`, color: COL.rebuilt });
+    }
+  }
+  // releases and impacts spotted here, until the disc's results for that throw take over
+  const reported = i => live.caps.some(e => !e.old && i >= e.c.start && i <= e.c.start + e.c.n + 60);
+  for (const { seq: i } of live.rels) if (!reported(i)) vlines.push({ i, color: "#fbbf24", label: "release" });
+  for (const i of live.impMarks) if (!reported(i)) vlines.push({ i, color: "#f87171", label: "impact" });
+  const top = 2, axisH = 16, gapH = 6, nP = 5, ph = (H - top - axisH - gapH * (nP - 1)) / nP;
+  const R = k => ({ x: 0, y: top + k * (ph + gapH), w: W, h: ph });
+  const gr = autoRange(sample(raw(0), i0, i1).concat(sample(raw(1), i0, i1), sample(raw(2), i0, i1)).map(v => v * gS), counts ? 1500 : 100, counts ? 34000 : 2400, true);
+  panel(g, R(0), { i0, i1, yMin: gr[0], yMax: gr[1], title: `Gyroscope – rotation rate (${counts ? "counts" : "°/s"})`, bands, vlines, vlabels: true,
+    series: [{ get: sc(raw(0), gS), color: COL.x, label: "x" }, { get: sc(raw(1), gS), color: COL.y, label: "y" }, { get: sc(raw(2), gS), color: COL.z, label: "z = spin axis" }],
+    hlines: [{ v: 32767 * gS, color: "#f87171", label: "gyro max" }, { v: -32767 * gS, color: "#f87171" }] });
+  const ar = autoRange(sample(raw(3), i0, i1).concat(sample(raw(4), i0, i1), sample(raw(5), i0, i1)).map(v => v * aS), counts ? 3000 : 1.5, counts ? 34000 : 16.6, true);
+  panel(g, R(1), { i0, i1, yMin: ar[0], yMax: ar[1], title: `Accelerometer – force (${counts ? "counts" : "g"})`, bands, vlines,
+    series: [{ get: sc(raw(3), aS), color: COL.x, label: "x" }, { get: sc(raw(4), aS), color: COL.y, label: "y" }, { get: sc(raw(5), aS), color: COL.z, label: "z (≈ 1 g lying flat)" }],
+    hlines: [{ v: 32767 * aS, color: "#f87171", label: "accel max" }, { v: -32767 * aS, color: "#f87171" }] });
+  const fpk = Math.max(0, ...sample(arr(live.fAbs), i0, i1)), v4 = I.logVer >= 4, P = v4 ? relRules(I) : null;
+  panel(g, R(2), { i0, i1, yMin: 0, yMax: Math.min(30, Math.max(5, fpk * 1.1)), sqrt: true, title: "Force (g) – how release and impact are found", bands, vlines,
+    series: [{ get: arr(live.fAbs), color: COL.abs, label: "total" }, { get: arr(live.fComp), color: COL.hand, label: "hand force = total minus the steady off-center part", width: 1.8 }],
+    hlines: [{ v: 4, color: "#f87171", label: "over 4 g after release = hit something" }, { v: I.trigG, color: "#94a3b8", label: `trigger ${nf(I.trigG)} g` },
+             { v: I.freeG, color: "#fbbf24", label: v4 && P.relMinRpm > 0 ? `under ${nf(I.freeG)} g for 25 ms, spinning ${nf(P.relMinRpm)}+ rpm = left the hand` : `under ${nf(I.freeG)} g for 25 ms = left the hand` }]
+             .concat(v4 ? [{ v: P.relPeakG, color: "#a78bfa", label: `the pull must peak over ${nf(P.relPeakG)} g` }] : []) });
+  const sr = autoRange(sample(arr(live.fSpinG), i0, i1).concat(sample(arr(live.fSpinC), i0, i1), ptSpin.map(pt => pt.v)), 420, 3000, false);
+  panel(g, R(3), { i0, i1, yMin: 0, yMax: sr[1], title: "Spin (rpm) – two ways", bands, vlines, points: ptSpin,
+    series: [{ get: arr(live.fSpinG), color: COL.spinG, label: "gyro z ÷ 6" }, { get: arr(live.fSpinC), color: COL.spinC, label: "from the off-center force √(a/r), free flight only", dash: [4, 3] }],
+    hlines: [{ v: GYRO_MAX / 6, color: "#f87171", label: "gyro max 382 rpm" }] });
+  const vr = autoRange(sample(arr(live.fSpeed), i0, i1).concat(ptSpeed.map(pt => pt.v)), 10, 120, false);
+  panel(g, R(4), { i0, i1, yMin: 0, yMax: vr[1], title: "Speed being added up (mph) – from the last still moment, held at release", bands, vlines, points: ptSpeed,
+    series: [{ get: arr(live.fSpeed), color: COL.speed, label: "live estimate", width: 1.8 }] });
+  timeAxis(g, [{ a: i0, b: i1, x0: 0, x1: W }], H - axisH + 3, odr, end, t => t === 0 ? "now" : `−${-t} s`);
+}
+
+function updateLiveSide() {
+  const now = performance.now();
+  if (now - live.rxT >= 1000) { live.rate = (live.rx - live.rxPrev) * 1000 / Math.max(1, now - live.rxT); live.rxPrev = live.rx; live.rxT = now; }
+  const I = live.info || DEFAULT_INFO;
+  $("lpRate").textContent = live.last < 0 ? "waiting for the disc…" :
+    `${live.rate.toFixed(0)} readings/s` + (I.batt > 0 ? ` · battery ${I.batt.toFixed(2)} V` : "") + (live.paused ? " · PAUSED" : "");
+  if (live.last < 0) return;
+  const at = live.paused ? live.pauseAt : live.last, sl = at % LRING, r = live.ring.subarray(sl * 6, sl * 6 + 6);
+  const row = (name, k, sc, unit, d) => `<span>${name}</span><span class="r">${r[k]}</span><span class="r">${(r[k] * sc).toFixed(d)} ${unit}</span>`;
+  $("lpRaw").innerHTML = `<span class="h">axis</span><span class="h r">counts</span><span class="h r">× scale =</span>` +
+    row("gyro x", 0, I.glsb, "°/s", 1) + row("gyro y", 1, I.glsb, "°/s", 1) + row("gyro z", 2, I.glsb, "°/s", 1) +
+    row("accel x", 3, I.alsb, "g", 3) + row("accel y", 4, I.alsb, "g", 3) + row("accel z", 5, I.alsb, "g", 3);
+  const la = Math.max(0, at - RW + 1) % LRING;              // the look-ahead values trail by 35 readings
+  const a = live.fAbs[sl], hand = live.fComp[la], sg = live.fSpinG[sl], scn = live.fSpinC[la], sp = live.fSpeed[sl], lau = live.fLaunch[sl];
+  const st = live.fState[sl], rel = st === 3 ? live.rels.slice().reverse().find(x => x.seq <= at) : null, held = !!rel, isStill = st === 1;
+  const ax = r[3] * I.alsb, ay = r[4] * I.alsb, az = r[5] * I.alsb, am = Math.hypot(ax, ay, az) || 1;
+  const tilt = Math.acos(Math.max(-1, Math.min(1, Math.abs(az) / am))) * R2D, fa = frontDeg * D2R;
+  const uf = ax * Math.cos(fa) + ay * Math.sin(fa), ul = -ax * Math.sin(fa) + ay * Math.cos(fa);
+  const low = Math.atan2(-ul, -uf) * R2D, side = Math.abs(low) < 45 ? "front (USB-C)" : Math.abs(low) > 135 ? "back" : low > 0 ? "left" : "right";
+  const state = !live.paused && capturingSince ? "Recording a throw…" :
+    ["Moving – hold it still a moment", "Held still – reference set", "Moving – adding up speed", "Released – numbers held"][st];
+  const c = (k, val, why) => `<span>${k}</span><span class="v">${val}</span>` + (why ? `<span class="why">${why}</span>` : "");
+  const P = I.logVer >= 4 ? relRules(I) : null;              // firmware v4: the release also needs a freely spinning disc
+  $("lpCalc").innerHTML =
+    c("Total force", `${a.toFixed(2)} g`, "√(x² + y² + z²). 1 g = gravity when still.") +
+    c("Hand force", isFinite(hand) ? `${hand.toFixed(2)} g` : "–", `Total minus the steady part the off-center sensor feels when spinning (87 ms behind). Under ${nf(I.freeG)} g for 25 ms` +
+      (P ? `${P.relMinRpm > 0 ? `, with the disc spinning steadily at ${nf(P.relMinRpm)}+ rpm,` : ""} after a pull over ${nf(P.relPeakG)} g` : "") + " = left the hand.") +
+    c("Spin from gyro", `${sg.toFixed(0)} rpm`, "|gyro z| ÷ 6 (360° a turn, 60 s a minute). Stops at 382 rpm.") +
+    c("Spin from force", isFinite(scn) ? `${scn.toFixed(0)} rpm` : "–", I.radius > 0.0005 ? `√(steady force ÷ ${(I.radius * 1000).toFixed(1)} mm${P && P.locked ? ", set on the calibration page" : ""}), only in free flight.`
+      : "Needs the spin radius: measure it on the calibration page.") +
+    c("Tilt from flat", isStill ? `${tilt.toFixed(1)}°` : "–", isStill ? (tilt > 2 ? `Lower edge: ${side}.` : "Flat.") : "Only while still: gravity is the reference.") +
+    c(held ? "Speed at release" : "Speed so far", held ? `${rel.speed.toFixed(1)} mph` : isFinite(sp) ? `${sp.toFixed(1)} mph` : "–",
+      held ? `Live estimate. The disc's own number (below) also fills in a maxed-out gyro${P && P.lever ? " and takes off the sensor's own turning about the center (it sits a few mm off it)" : ""}.`
+        : "Added up since the last still moment: the force in world directions (from the gyro), minus gravity.") +
+    c(held ? "Launch at release" : "Launch so far", isFinite(lau) ? `${signed(lau)}°` : "–", "The angle of that velocity above level.") +
+    (held ? c("Hyzer / nose", `${signed(rel.hyzer)}° / ${signed(rel.nose)}°`, "The disc's tilt against the flight path at release.") : "") +
+    c("State", state, "");
+}
+function renderLastThrow() {
+  const e = live.sel; if (!e) return;
+  const d = e.c.res;
+  const c = (k, v) => `<span>${k}</span><span class="v">${v}</span>`;
+  $("lpLast").innerHTML = c("Speed", `${d[0].toFixed(1)} mph`) + c("Spin", `${d[1].toFixed(0)} rpm`) + c("Hyzer", `${signed(d[2])}°`) +
+    c("Nose", `${signed(d[3])}°`) + c("Launch", `${signed(d[4])}°`) + c("Wobble", `${d[5].toFixed(1)}°`) +
+    c("Peak force", `${d[6].toFixed(1)} g`) + c("Counted", e.c.counted ? "yes" : "no (see the steps)") +
+    ((nw => nw && $("lpRebuilt").checked ? `<span class="why" style="color:${COL.rebuilt}">Rebuilt past the sensor's limits: ${nw.speed.toFixed(1)} mph, ${spinTxt(nw)} (${nw.spinSrc}), ` +
+      `hyzer ${signed(nw.hyzer)}°, nose ${signed(nw.nose)}°, launch ${signed(nw.launch)}°${nw.relFound ? "" : " - release not found, the disc's mark used"}.</span>` : "")(nwOf(e)));
+}
+function renderThrowSel() {
+  const sel = $("lpThrowSel");
+  const when = t => new Date(t).toDateString() === new Date().toDateString() ? new Date(t).toLocaleTimeString() : new Date(t).toLocaleString();
+  sel.innerHTML = live.caps.slice().reverse().map((e, k) => `<option value="${live.caps.length - 1 - k}">${e.label ? "✓ " : ""}${when(e.at)} · ${e.c.res[0].toFixed(1)} mph${e.c.counted ? "" : e.quiet ? " (handling, not counted)" : " (not counted)"}</option>`).join("");
+  sel.value = String(live.caps.indexOf(live.sel));
+  sel.style.display = live.caps.length ? "" : "none";
+}
+function renderBreakdown() {
+  if (settings.mode !== "live") return;                       // drawn when the live page opens (setMode)
+  const e = live.sel, cv = $("lpBreak"), { g, W, H } = fitCanvas(cv);
+  if (!e || !e.an || !e.an.n) {
+    $("lpCheck").textContent = "";
+    g.font = "14px system-ui, Segoe UI, sans-serif"; g.fillStyle = "#8b97a8"; g.textAlign = "center";
+    g.fillText(e ? "This throw's readings didn't arrive." : "Throw the disc: its readings show up here, cut into the sections the disc uses.", W / 2, H / 2);
+    return;
+  }
+  const an = e.an, S = e.S, I = e.info || live.info || DEFAULT_INFO, odr = an.odr || 416, n = an.n;
+  const A = i => Math.hypot(S[i * 6 + 3], S[i * 6 + 4], S[i * 6 + 5]) * I.alsb;
+  // time axis: the still moment, a break, then from just before the wind-up to just after the flight
+  let move = an.iStart;
+  for (let i = an.iStart; i < an.iRel; i++)
+    if (Math.abs(A(i) - 1) > 0.3 || Math.hypot(S[i * 6], S[i * 6 + 1], S[i * 6 + 2]) * I.glsb > 60) { move = i; break; }
+  const nw = nwOf(e), nwOn = !!nw && $("lpRebuilt").checked;
+  // up to the disc's flight and impact - and the rebuilt release and impact, when those come later
+  const lastI = Math.max(an.f1, an.imp < n ? an.imp : 0, nwOn ? Math.min(n - 1, Math.max(nw.rel + Math.round(0.05 * odr), nw.imp)) : 0);
+  const pad = Math.round(0.04 * odr), end = Math.min(n - 1, lastI + Math.round(0.06 * odr));
+  const b0 = Math.max(0, Math.min(move, 415, an.iRel) - Math.round(0.12 * odr));
+  const sAt = an.stillAt >= 0 ? an.stillAt : an.seedAt >= 0 ? an.seedAt : -1;   // v4: the quiet moment used instead
+  const ranges = sAt >= 0 && b0 - an.iStart > 0.25 * odr ? [[Math.max(0, sAt - pad), an.iStart + pad], [b0, end]]
+    : [[Math.max(0, Math.min(sAt >= 0 ? sAt - pad : b0, b0)), end]];
+  const segs = xLayout(ranges, 0, W);
+  const bands = captureBands(an, n), vlines = [{ i: 415, color: "#94a3b8", label: "trigger" }, { i: an.iRel, color: "#fbbf24", label: "release" }];
+  if (nwOn && Math.abs(nw.rel - an.iRel) >= 3) vlines.push({ i: nw.rel, color: COL.rebuilt, label: "release (rebuilt)" });
+  if (an.imp < n) vlines.push({ i: an.imp, color: "#f87171", label: "impact" });
+  else if (e.c.end === 1) vlines.push({ i: n - 1, color: "#f87171", label: "impact: recording ends" });
+  let fpk = 0; for (const [a, b] of ranges) for (let i = a; i <= Math.min(b, n - 1); i++) fpk = Math.max(fpk, A(i));
+  const axisH = 16, gapH = 6, ph = (H - axisH - gapH * 2) / 3, Rk = k => ({ x: 0, y: k * (ph + gapH), w: W, h: ph });
+  const fl = [{ v: I.trigG, color: "#94a3b8", label: `trigger ${nf(I.trigG)} g` }, { v: I.freeG, color: "#fbbf24", label: `release: under ${nf(I.freeG)} g` }];
+  if (an.v4) fl.push({ v: an.rules.relPeakG, color: "#a78bfa", label: `pull peak over ${nf(an.rules.relPeakG)} g` });
+  if (an.imp < n && an.impLim) fl.push({ v: an.impLim, color: "#f87171", label: `impact: over ${an.impLim.toFixed(1)} g` });
+  const nwF = i => nwOn && nw.fit && i >= nw.fit[0] && i < nw.fit[1] ? Math.hypot(nw.fx[i], nw.fy[i], nw.fz[i]) / GMS : null;
+  let fnw = 0; if (nwOn && nw.fit) for (let i = nw.fit[0]; i < nw.fit[1]; i++) fnw = Math.max(fnw, nwF(i));
+  panel(g, Rk(0), { segs, yMin: 0, yMax: Math.min(80, Math.max(5, fpk * 1.1, fnw * 1.05)), sqrt: true, title: "Force (g)", bands, vlines, vlabels: true, hlines: fl,
+    series: [{ get: i => i >= 0 && i < n ? A(i) : null, color: COL.abs, label: "total" },
+             { get: i => isFinite(an.hand[i]) ? an.hand[i] : null, color: COL.hand, label: "hand force (off-center part removed)", width: 1.8 }]
+      .concat(nwOn && nw.fit ? [{ get: nwF, color: COL.rebuilt, label: "rebuilt past the 16 g limit", width: 2, dash: [5, 3] }] : []) });
+  const inFlight = val => i => i >= an.f0 && i < an.f1 && val > 0 ? val : null;
+  const spinSeries = [{ get: i => i >= 0 && i < n ? Math.abs(S[i * 6 + 2] * I.glsb - an.bias[2]) / 6 : null, color: COL.spinG, label: "gyro z ÷ 6" }];
+  if (an.c0 >= 0) spinSeries.push({ get: i => isFinite(an.fill[i]) ? an.fill[i] : null, color: COL.fill, label: "filled in (gyro maxed)", dash: [5, 3], width: 2 });
+  if (an.spinC > 0) spinSeries.push({ get: inFlight(an.spinC), color: COL.spinC, label: "√(a/r)", dash: [4, 3] });
+  if (an.wave.rpm > 0) spinSeries.push({ get: inFlight(an.wave.rpm), color: "#f472b6", label: "drag wave", dash: [2, 3] });
+  spinSeries.push({ get: inFlight(an.spin), color: COL.y, label: `result ${an.spin.toFixed(0)} rpm`, width: 2.4 });
+  if (nwOn) spinSeries.push({ get: i => i >= nw.iStart && i < n ? Math.abs(nw.wz[i]) * 60 / (2 * Math.PI) : null, color: COL.rebuilt, label: `rebuilt ${spinTxt(nw)}`, width: 2 });
+  panel(g, Rk(1), { segs, yMin: 0, yMax: Math.max(420, ...[an.spin, an.spinC, an.wave.rpm, nwOn ? nw.spin : 0].map(val => (val || 0) * 1.15)), title: "Spin-axis rate (rpm)",
+    bands, vlines, series: spinSeries, hlines: [{ v: GYRO_MAX / 6, color: "#f87171", label: "gyro max 382 rpm" }] });
+  // the rebuilt speed being added up, held at its release (after that it only means the flight and the hit)
+  const nwV = i => { if (!nwOn || i < nw.iStart || i >= n) return null; if (i > nw.rel) return nw.speed; const v = nw.vel[i - nw.iStart]; return v ? Math.hypot(v[0], v[1], v[2]) * 2.2369363 : null; };
+  panel(g, Rk(2), { segs, yMin: 0, yMax: Math.max(10, an.speed * 1.15, nwOn ? nw.speed * 1.15 : 0), title: "Speed being added up (mph)", bands, vlines,
+    series: [{ get: i => isFinite(an.speedTrace[i]) ? an.speedTrace[i] : null, color: COL.speed, label: `|velocity| → ${an.speed.toFixed(1)} mph at release`, width: 2 }]
+      .concat(nwOn ? [{ get: nwV, color: COL.rebuilt, label: `rebuilt → ${nw.speed.toFixed(1)} mph, held at its release`, width: 2 }] : []) });
+  timeAxis(g, segs, H - axisH + 3, odr, 415, t => `${t > 0 ? "+" : ""}${t} s`);
+  // the disc's own numbers vs this page's re-calculation
+  const d = e.c.res, ok = Math.abs(d[0] - an.speed) < 0.6 && Math.abs(d[1] - an.spin) < 4 && Math.abs(d[2] - an.hyzer) < 1 && Math.abs(d[4] - an.launch) < 1;
+  $("lpCheck").innerHTML = (ok ? `<span style="color:var(--good)">✓ this page's re-calculation matches the disc</span>` :
+    `<span style="color:var(--warn)">re-calculation differs from the disc (disc ${d[0].toFixed(1)} mph / ${d[1].toFixed(0)} rpm vs ${an.speed.toFixed(1)} / ${an.spin.toFixed(0)})${e.missing ? ` – ${e.missing} readings were missing` : ""}</span>`) +
+    (nwOn ? ` · <span style="color:${COL.rebuilt}">rebuilt: ${nw.speed.toFixed(1)} mph, ${spinTxt(nw)}` +
+      (!nw.relFound ? ", release not found (used the disc's mark)"
+        : Math.abs(nw.rel - e.c.rel) >= 3 ? `, released ${(Math.abs(nw.rel - e.c.rel) / nw.rate * 1000).toFixed(0)} ms ${nw.rel < e.c.rel ? "before" : "after"} the disc's mark` : "") + `</span>` : "");
+  renderSteps(e);
+}
+function renderSteps(e) {
+  const an = e.an, I = e.info || live.info || DEFAULT_INFO, odr = an.odr || 416;
+  const v4 = !!an.v4, P = an.rules;                         // firmware v4 (log version 4) rules, see analyzeCapture
+  const ms = k => `${Math.round(k / odr * 1000)} ms`, ts = k => { const t = (k - 415) / odr; return `${t > 0 ? "+" : ""}${t.toFixed(2)} s`; };
+  const sw = c => `<span class="sw" style="background:${c.replace(/0\.\d+\)$/, "0.9)")}"></span>`;
+  const warn = t => ` <span style="color:var(--warn)">${t}</span>`;
+  const src = { 0: "the gyro: average |gyro z| ÷ 6", 1: "the drag wave in the accelerometer", 2: "the off-center force, √(a ÷ r)",
+                3: "the drag wave and the off-center force (they agreed, so averaged)" }[an.src];
+  const endWhy = { 1: "at the impact", 2: "once the flight window was full", 3: "at the 3 s limit", 4: "because readings were lost" }[e.c.end];
+  const offs = an.bias.map(v => v.toFixed(1)).join(", ");
+  const L = [];
+  L.push(`${sw(BAND.pre)}<b>Recording kept</b> (${(an.n / odr).toFixed(2)} s): the 1 s before the trigger is always kept${endWhy ? `; the disc stopped ${endWhy}` : ""}.`);
+  L.push(`<b>Trigger</b> (t = 0): force over ${nf(I.trigG)} g or rotation over ${nf(I.trigDps)} °/s.` +
+    (v4 ? ` The pull's peak counts from ${(P.prePeak / odr).toFixed(1)} s before it: a gentle toss trips the trigger after its peak.` : ""));
+  if (an.stillAt >= 0) L.push(`${sw(BAND.still)}<b>Still moment</b> (${ms(an.win)} at ${ts(an.stillAt)}): gyro under 25 °/s and force within 1 ± 0.15 g. Gravity's direction here sets "down", and ` +
+    (!v4 ? `the gyro's offset is measured: ${offs} °/s.`
+      : an.flags & FL.BIAS_KEPT ? `the gyro here was more than ${nf(P.biasTol)} °/s from the disc's own offset (a hand's tremor, not offset), so the disc's offset is used: ${offs} °/s.`
+      : `the gyro's offset is measured: ${offs} °/s${P.biasTol > 0 ? ` (within ${nf(P.biasTol)} °/s of the disc's own)` : ""}.`));
+  else if (!v4 || an.seedAt < 0) L.push(`${sw(BAND.still)}<b>No still moment</b> in the 1 s before the throw, so "down" is a guess from the first reading and speed and angles are less reliable.` + warn("Hold the disc still for a moment before throwing."));
+  else if (an.seedKind === "quiet") L.push(`${sw(BAND.seed)}<b>No still moment</b> in the 1 s before the throw, so "down" comes from the last quiet one (gyro under 60 °/s, force within 1 ± 0.25 g for 100 ms), taken ${ms(20)} earlier (${ts(an.seedAt)}); the disc's own gyro offset is used. Speed and angles are less reliable.` + warn("Hold the disc still for a moment before throwing."));
+  else L.push(`${sw(BAND.seed)}<b>No still or quiet moment</b> in the 1 s before the throw, so "down" comes from the steadiest 100 ms (${ts(an.seedAt)}) – a guess; speed and angles may be off.` + warn("Hold the disc still for a moment before throwing."));
+  L.push(`${sw(BAND.pull)}<b>Wind-up + pull</b> (${ms(an.iRel - an.iStart)}, ${v4 && an.stillAt < 0 && an.seedAt >= 0 ? "quiet" : "still"} moment → release): each reading is turned into world directions with the gyro, gravity (1 g) is taken off, and it is multiplied by 1/${odr} s and added up → velocity. Peak force ${an.peak.toFixed(1)} g${v4 ? ` (from ${(P.prePeak / odr).toFixed(1)} s before the trigger)` : ""}.` +
+    (an.c0 >= 0 ? ` The gyro maxed out for the last ${ms(an.iRel - an.c0 + 1)} (spin over 382 rpm), so its rate there was filled in with a straight ramp up to the release spin.` : "") +
+    (an.flags & FL.ACCEL_SAT ? warn("The accelerometer maxed out (16 g), so speed may read low.") : ""));
+  const sensNote = (I.sens || 5) <= 2 ? "Counted anyway at this sensitivity." : "Not counted at this sensitivity.";
+  if (!v4) L.push(an.found
+    ? `<b>Release</b> (${ts(an.iRel)}): the hand force (total minus the steady off-center part) stayed under ${nf(I.freeG)} g for 25 ms, and no pulling followed in the next 48 ms.`
+    : `<b>No clean release found</b>: the force never settled after the pull. ${sensNote}`);
+  else L.push(an.found
+    ? `<b>Release</b> (${ts(an.iRel)}): after a pull that peaked over ${nf(P.relPeakG)} g, the hand force (total minus the steady off-center part) stayed under ${nf(I.freeG)} g for 25 ms, no pulling followed in the next 48 ms` +
+      (P.relMinRpm > 0 ? `, and the disc spun freely: ${an.relSpin.toFixed(0)} rpm, steady and one way, over the next ${ms(P.steadyN)} (needs ${nf(P.relMinRpm)} rpm).` : ".")
+    : `<b>No release found</b>: ${an.peak <= P.relPeakG ? `the pull never went over ${nf(P.relPeakG)} g.`
+      : `no moment where the hand force was gone${P.relMinRpm > 0 ? ` with the disc spinning freely (${nf(P.relMinRpm)} rpm or more, steady and one way, for ${ms(P.steadyN)})` : " and stayed gone"}.`} ${sensNote}`);
+  L.push(`<b>Speed</b> = length of the added-up velocity = <b>${an.speed.toFixed(1)} mph</b>. <b>Launch</b> = its angle above level, atan2(up, sideways) = <b>${signed(an.launch)}°</b>.` +
+    (v4 && an.flags & FL.LEVER_ARM ? ` The sensor sits ${(Math.hypot(...an.leverR) * 1000).toFixed(1)} mm off the disc's center, so it also moved by turning: corrected by ${signed(an.lever, 2)} mph for that.` : ""));
+  L.push(`<b>Hyzer</b> = the disc's sideways tilt against the flight path (${an.flags & FL.SPIN_CCW ? "counter-clockwise spin, so right edge down = hyzer" : "clockwise spin, so left edge down = hyzer"}) = <b>${signed(an.hyzer)}°</b>. <b>Nose</b> = its tilt along the flight path, minus launch = <b>${signed(an.nose)}°</b>.`);
+  L.push(!v4 ? `${sw(BAND.settle)}<b>Settle</b>: the first ${ms(12)} after release are skipped, because the disc is still shaking from leaving the hand.`
+    : `${sw(BAND.settle)}<b>Settle</b>: the first ${ms(an.f0 - an.iRel)} after release are skipped, because the disc is still shaking from leaving the hand${an.f0 - an.iRel < 12 ? ` (less than the usual ${ms(12)}: the flight was short)` : ""}.`);
+  L.push(`${sw(BAND.flight)}<b>Free flight</b> (${ms(an.f1 - an.f0)}${an.imp < an.n ? ", up to just before the impact" : ""}): <b>spin = ${an.spin.toFixed(0)} rpm</b> from ${src}.` +
+    (an.src ? ` The gyro read ${an.spinGyro.toFixed(0)} rpm because it maxed out (drag wave ${an.wave.rpm ? an.wave.rpm.toFixed(0) : "–"}, off-center force ${an.spinC ? an.spinC.toFixed(0) : "–"} rpm).` : "") +
+    (v4 && an.src === 2 && P.locked && an.wave.rpm > 0 && an.f1 < an.f0 + 64 ? " The window was short, so the off-center force with the calibrated radius was used on its own." : "") +
+    (v4 && an.flags & FL.WAVE_REJECTED ? ` A pattern turning with the spin (${an.wave.wrong.toFixed(0)} rpm) was ignored: drag turns against the spin, so that one is fixed to the disc (wobble).` : "") +
+    ` <b>Wobble = ${an.wobble.toFixed(1)}°</b> = atan(wobbling in-plane rotation ÷ (2 × spin)), the half-angle of the cone the axis traces.` +
+    (an.flags & FL.SHORT_FLIGHT ? warn(v4 ? `Short free flight (${ms(an.f1 - an.f0)}): a little more distance gives better spin and wobble.` : "Very short free flight: stand farther from the net.") : ""));
+  if (an.imp < an.n) L.push(`${sw(BAND.after)}<b>Impact</b> (${ts(an.imp)}): the hand force rose above ${an.impLim ? an.impLim.toFixed(1) + " g" : "its in-flight level"} (the net, the ground or a hand). Nothing after it is used.`);
+  else if (e.c.end === 1) L.push(`<b>Impact</b> (${ts(an.n - 1)}): the disc saw the force jump over 4 g (the net, the ground or a hand) and stopped recording there.`);
+  const relOk = v4 ? "release with the disc spinning freely" : "clean release";
+  L.push(an.flags & FL.VALID
+    ? `<b>Counted as a throw</b>: peak ${an.peak.toFixed(1)} g > ${nf(I.minPeak)} g, spin ${an.spin.toFixed(0)} ≥ ${nf(I.minSpin)} rpm${an.found ? `, ${relOk}` : ""}.`
+    : `<b>Not counted</b>: ${an.peak <= I.minPeak ? `peak ${an.peak.toFixed(1)} g ≤ ${nf(I.minPeak)} g` : an.spin < I.minSpin ? `spin ${an.spin.toFixed(0)} < ${nf(I.minSpin)} rpm` : `no ${relOk}`}.`);
+  $("lpSteps").innerHTML = L.map(x => `<li>${x}</li>`).join("");
+}
+function renderLegend() {
+  const c = (col, k, v) => `<span><span class="sw" style="background:${col.replace(/0\.\d+\)$/, "0.9)")}"></span>${k}</span><span class="v" style="font-weight:400;color:var(--muted)">${v}</span>`;
+  $("lpLegend").innerHTML = c(BAND.pre, "Before the trigger", "always kept (1 s)") + c(BAND.still, "Still moment", "sets 'down' + gyro offset") +
+    c(BAND.seed, "Quiet moment", "sets 'down' when nothing was still") +
+    c(BAND.pull, "Wind-up + pull", "added up → speed & angles") + c(BAND.settle, "Settle", "skipped (29 ms, less on a short flight)") +
+    c(BAND.flight, "Free flight", "spin & wobble") + c(BAND.after, "After the impact", "not used");
+}
+$("lpPause").onclick = () => { live.paused = !live.paused; live.pauseAt = live.last; $("lpPause").textContent = live.paused ? "▶ Resume" : "❚❚ Pause"; };
+// The calibration page (calibrate.html) connects to the disc itself, so this page lets go of it first - with the
+// raw stream switched off, so the disc keeps its throws in its own memory again until something asks for it.
+async function openCalPage() {
+  if (rec.on) { toast("Stop the recording first (⚙ Settings): the calibration page connects to the disc itself.", "warn", 6000); return; }
+  if (cmdChar && streamSent) await sendCmd("btoff");
+  await disconnect();
+  location.href = "calibrate.html";
+}
+$("lpCal").onclick = $("calBtn").onclick = openCalPage;
+// What the disc's info packet says about its calibration (only known while it streams to this page).
+function renderCalState() {
+  const I = live.info, el = $("calState"); if (!I || !el) return;
+  const f = I.calFlags, locked = f != null && !!(f & 2) && I.radius > 0;
+  el.textContent = (I.radius > 0 ? `Spin radius ${(I.radius * 1000).toFixed(1)} mm${locked ? ", set on the calibration page" : ""}` : "Spin radius not measured yet") +
+    (f != null && (f & 32) ? " · the last calibration was upside down compared with the one before" : "") +
+    (f != null && (f & 8) ? " · a calibration is active but not saved" : "");
+}
+$("lpThrowSel").onchange = () => {
+  live.sel = live.caps[+$("lpThrowSel").value] || live.sel;
+  renderBreakdown(); renderLastThrow(); live.sel.flight = capFlight(live.sel); renderLog(true);
+};
+if (window.ResizeObserver) {
+  let rbRaf = 0;
+  new ResizeObserver(() => { cancelAnimationFrame(rbRaf); rbRaf = requestAnimationFrame(renderBreakdown); }).observe($("lpBreak").parentElement);
+}
+$("lpRebuilt").onchange = () => { renderBreakdown(); renderLastThrow(); };
+window.addEventListener("resize", () => { if (settings.mode === "live") { renderBreakdown(); renderLog(); } });
+
+// ================================================================ throw log: what each throw really was
+// Every throw seen on the live page is kept in this browser (IndexedDB) with its raw readings, the disc's
+// numbers, this page's step-by-step results, the live estimate and the simulated flight. A label adds what it
+// really was, so the calculations can later be compared with reality and re-tuned.
+const LOGDB = "disctracker-throwlog", LOGSTORE = "throws";
+let logDbP = null;
+const logDb = () => logDbP || (logDbP = new Promise((res, rej) => {
+  const r = indexedDB.open(LOGDB, 1);
+  r.onupgradeneeded = () => r.result.createObjectStore(LOGSTORE, { keyPath: "id" });
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+}));
+async function logTx(mode, fn) {
+  const db = await logDb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(LOGSTORE, mode), req = fn(tx.objectStore(LOGSTORE));
+    tx.oncomplete = () => res(req.result); tx.onerror = () => rej(tx.error);
+  });
+}
+const logAll = () => logTx("readonly", st => st.getAll());
+live.logStats = { total: 0, labeled: 0 };
+function capFlight(e) {
+  const d = e.c.res, disc = currentDisc(); e.simDisc = disc.name;
+  const nw = settings.rebuilt && !e.nwPending && (!e.old || e.nw !== undefined) ? nwOf(e) : null, r = nw && nw.relFound && !(nw.gap > 3) ? nw : null;
+  e.simRebuilt = !!r;
+  return simulateFlight({ speedMph: r ? r.speed : d[0], spinRpm: r ? r.spin : d[1], hyzer: r ? r.hyzer : d[2], nose: r ? r.nose : d[3],
+    launch: r ? r.launch : d[4], wobble: r && r.wobble != null ? r.wobble : d[5], ccw: r ? r.ccw : !!(e.c.flags & 128),
+    disc, windMph: settings.windMph, windFrom: settings.windFrom, heightFt: settings.heightFt });
+}
+// the rebuilt numbers kept with a logged throw (null: it couldn't be rebuilt)
+const rebuiltRec = e => { const nw = nwOf(e); return nw ? { speed: nw.speed, spin: nw.spin, spinAtLeast: nw.atLeast, hyzer: nw.hyzer, nose: nw.nose,
+  launch: nw.launch, spinFrom: nw.spinSrc, releaseFound: nw.relFound, relShiftMs: (nw.rel - e.c.rel) / nw.rate * 1000 } : null; };
+function capRecord(e) {
+  const an = e.an && e.an.n ? e.an : null, fl = e.flight;
+  return { id: e.id, at: e.at, label: e.label, c: e.c, S: e.S, info: e.info, missing: e.missing, live: e.liveEst,
+    page: an && { speed: an.speed, spin: an.spin, hyzer: an.hyzer, nose: an.nose, launch: an.launch, wobble: an.wobble, peak: an.peak,
+      spinGyro: an.spinGyro, spinCentrip: an.spinC, spinWave: an.wave.rpm, flags: an.flags, src: an.src, rel: an.iRel, stillAt: an.stillAt,
+      imp: an.imp, flightMs: (an.f1 - an.f0) / an.odr * 1000, fillMs: an.c0 >= 0 ? (an.iRel - an.c0 + 1) / an.odr * 1000 : 0,
+      leverMph: an.v4 ? an.lever : null, seedAt: an.v4 ? an.seedAt : null },
+    rebuilt: rebuiltRec(e),
+    sim: fl && { distFt: fl.distFt, lateralFt: fl.lateralFt, maxHFt: fl.maxHFt, timeS: fl.timeS, disc: e.simDisc } };
+}
+async function logSave(e, isNew) {
+  try {
+    await logTx("readwrite", st => st.put(capRecord(e)));
+    if (isNew || e.logged === false) live.logStats.total++;    // logged false: a quiet capture, saved once labeled
+    e.logged = true;
+    renderLogCount();
+  } catch (err) { console.warn("throw log", err); $("lgCount").textContent = "This browser can't save throws."; }
+}
+function renderLogCount() {
+  const st = live.logStats;
+  $("lgCount").textContent = st.total ? `Log: ${st.labeled} of ${st.total} throws labeled` : "Throws are logged as they come in";
+}
+const lgFields = { type: "lgType", where: "lgWhere", speed: "lgSpeed", spin: "lgSpin", distFt: "lgDistIn", angle: "lgAngle", wobble: "lgWob", nose: "lgNose", note: "lgNote" };
+const stickyKey = "disctracker.loglast.v1";
+// The card for the selected throw: simulated distance, a small flight map and its label.
+function renderLog(fillForm) {
+  const e = live.sel;
+  drawMiniSim(e);
+  if (!e) { $("lgWhich").textContent = ""; $("lgDist").textContent = "–"; $("lgSimNote").textContent = "Throw the disc to see its flight here."; renderLogCount(); return; }
+  const fl = e.flight, k = live.caps.indexOf(e) + 1;
+  $("lgWhich").textContent = `${new Date(e.at).toLocaleTimeString()}${e.c.counted ? "" : " · not counted"}`;
+  $("lgDist").textContent = fl ? `${fmt(dist(fl.distFt))} ${unit()}` : "–";
+  $("lgSimNote").textContent = fl ? `Simulated with ${e.simDisc || "the disc in Settings"}${e.simRebuilt ? " from the rebuilt numbers" : ""}, no wind: ${Math.abs(fl.lateralFt).toFixed(0)} ft ${fl.lateralFt >= 0 ? "left" : "right"}, ` +
+    `${fl.maxHFt.toFixed(0)} ft high, ${fl.timeS.toFixed(1)} s.` : "";
+  if (fillForm) {
+    let last = {}; try { last = JSON.parse(localStorage.getItem(stickyKey) || "{}"); } catch {}
+    const L = e.label || { type: last.type || "", where: last.where || "" };    // what you threw last time is the usual guess
+    for (const [f, id] of Object.entries(lgFields)) $(id).value = L[f] ?? "";
+  }
+  $("lgState").innerHTML = e.label ? `<span style="color:var(--good)">✓ labeled</span>` : "Not labeled yet";
+  renderLogCount();
+}
+$("lgSave").onclick = async () => {
+  const e = live.sel; if (!e) { toast("No throw to label yet.", "warn", 2500); return; }
+  const L = {};
+  for (const [f, id] of Object.entries(lgFields)) { const v = $(id).value.trim(); L[f] = v === "" ? null : (f === "speed" || f === "distFt") ? +v : v; }
+  L.savedAt = Date.now();
+  const was = !!e.label; e.label = L;
+  try { localStorage.setItem(stickyKey, JSON.stringify({ type: L.type, where: L.where })); } catch {}
+  if (!was) live.logStats.labeled++;
+  await logSave(e, false);
+  renderThrowSel(); renderLog(false);
+  toast("Label saved.", "good", 1500);
+};
+function drawMiniSim(e) {
+  const { g, W, H } = fitCanvas($("lgCanvas")), fl = e && e.flight;
+  g.fillStyle = "rgba(255,255,255,0.025)"; g.fillRect(0, 0, W, H);
+  if (!fl || !fl.path.length) return;
+  const P = fl.path, maxX = Math.max(100, ...P.map(q => q.x)) * 1.06, maxY = Math.max(25, ...P.map(q => Math.abs(q.y))) * 1.25;
+  const maxZ = Math.max(10, ...P.map(q => q.z)) * 1.2, topH = Math.round(H * 0.62), sideY0 = topH + 4, sideH = H - sideY0;
+  const X = x => 8 + x / maxX * (W - 16), Yt = y => topH / 2 - y / maxY * (topH / 2 - 4), Ys = z => sideY0 + sideH - 2 - z / maxZ * (sideH - 6);
+  g.font = "10.5px system-ui, Segoe UI, sans-serif"; g.textBaseline = "top";
+  const step = maxX > 400 ? 100 : 50;
+  for (let x = step; x < maxX; x += step) {
+    g.strokeStyle = "rgba(255,255,255,0.07)"; g.beginPath(); g.moveTo(X(x), 0); g.lineTo(X(x), H); g.stroke();
+    g.fillStyle = "#8b97a8"; g.fillText(`${x}`, X(x) + 2, 2);
+  }
+  g.strokeStyle = "rgba(255,255,255,0.18)"; g.beginPath(); g.moveTo(X(0), topH / 2); g.lineTo(W, topH / 2); g.moveTo(0, sideY0 + sideH - 2); g.lineTo(W, sideY0 + sideH - 2); g.stroke();
+  g.fillStyle = "rgba(255,255,255,0.06)"; g.fillRect(0, topH + 1, W, 2);
+  g.fillStyle = "#8b97a8"; g.fillText("from above (ft)", W - 82, topH - 13); g.fillText("from the side", W - 70, sideY0 + 2);
+  const line = (Y, key) => { g.beginPath(); P.forEach((q, i) => { const x = X(q.x), y = Y(q[key]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); };
+  g.strokeStyle = "#ff8a1f"; g.lineWidth = 2; line(Yt, "y"); line(Ys, "z"); g.lineWidth = 1;
+  const end = P[P.length - 1];
+  g.fillStyle = "#ffd34d"; g.beginPath(); g.arc(X(end.x), Yt(end.y), 4, 0, 2 * Math.PI); g.fill();
+  g.fillStyle = "#fff"; g.beginPath(); g.arc(X(0), Yt(0), 3, 0, 2 * Math.PI); g.fill();
+}
+const csvCell = v => v == null ? "" : typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : `"${String(v).replace(/"/g, '""')}"`;
+function saveFile(name, text, type) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+const stamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+$("lgCsv").onclick = async () => {
+  const recs = (await logAll()).sort((a, b) => a.at - b.at);
+  if (!recs.length) { toast("No throws saved yet.", "warn", 2500); return; }
+  const head = ["time", "labeled", "what_it_was", "thrown_into", "my_speed_mph", "disc_speed_mph", "speed_diff_mph", "my_spin", "disc_spin_rpm",
+    "spin_in_my_range", "my_distance_ft", "sim_distance_ft", "distance_diff_ft", "my_angle", "disc_hyzer_deg", "my_nose", "disc_nose_deg",
+    "disc_launch_deg", "my_wobble", "disc_wobble_deg", "counted", "spin_from", "peak_g", "gyro_spin_rpm", "centripetal_spin_rpm", "wave_spin_rpm",
+    "gyro_maxed_ms", "flight_window_ms", "ended_by", "live_speed_mph", "page_matches_disc", "sim_disc", "notes",
+    "rebuilt_speed_mph", "rebuilt_spin_rpm", "rebuilt_spin_is_at_least", "rebuilt_hyzer_deg", "rebuilt_nose_deg", "rebuilt_launch_deg", "rebuilt_spin_from",
+    "rebuilt_release_found", "rebuilt_release_vs_disc_ms"];
+  const SRC = ["gyro", "drag wave", "centripetal", "wave+centripetal"], END = { 1: "impact", 2: "flight window", 3: "time limit", 4: "readings lost" };
+  // throws logged before the new tracker are rebuilt here once (a few at a time, so the page keeps going) and kept
+  const rows = [], fresh = [];
+  for (let i = 0; i < recs.length; i++) {
+    const r = recs[i];
+    if (r.rebuilt === undefined) {
+      const e = live.caps.find(x => x.id === r.id);
+      r.rebuilt = rebuiltRec(e || { S: r.S, info: r.info, c: r.c }); fresh.push(r);
+      if (fresh.length % 3 === 0) { $("lgCount").textContent = `Rebuilding older throws… ${i + 1} of ${recs.length}`; await new Promise(res => setTimeout(res)); }
+    }
+    rows.push(r);
+  }
+  if (fresh.length) { logTx("readwrite", st => { let q; for (const r of fresh) q = st.put(r); return q; }).catch(err => console.warn("throw log", err)); renderLogCount(); }
+  const lines = rows.map(r => {
+    const d = r.c.res, L = r.label || {}, pg = r.page || {}, sim = r.sim || {}, rb = r.rebuilt || {};
+    const rng = L.spin ? L.spin.split("-").map(Number) : null;
+    const match = r.page ? Math.abs(pg.speed - d[0]) < 0.6 && Math.abs(pg.spin - d[1]) < 4 : null;
+    return [new Date(r.at).toLocaleString(), r.label ? "yes" : "", L.type, L.where, L.speed, d[0], L.speed != null ? d[0] - L.speed : null,
+      L.spin ? $("lgSpin").querySelector(`option[value="${L.spin}"]`)?.textContent || L.spin : null, d[1], rng ? (d[1] >= rng[0] && d[1] < rng[1] ? "yes" : "no") : null,
+      L.distFt, sim.distFt, L.distFt != null && sim.distFt != null ? sim.distFt - L.distFt : null, L.angle, d[2], L.nose, d[3], d[4], L.wobble, d[5],
+      r.c.counted ? "yes" : "no", SRC[r.c.src] || "", d[6], pg.spinGyro, pg.spinCentrip, pg.spinWave, pg.fillMs, pg.flightMs, END[r.c.end] || "",
+      r.live ? r.live.speed : null, match == null ? "" : match ? "yes" : "NO", sim.disc, L.note,
+      rb.speed, rb.spin, rb.spin == null ? null : rb.spinAtLeast ? "yes" : "no", rb.hyzer, rb.nose, rb.launch, rb.spinFrom,
+      rb.releaseFound == null ? null : rb.releaseFound ? "yes" : "no (used the disc's mark)", rb.relShiftMs].map(csvCell).join(",");
+  });
+  saveFile(`disc_throw_log_${stamp()}.csv`, [head.join(","), ...lines].join("\n") + "\n", "text/csv");
+};
+$("lgJson").onclick = async () => {
+  const recs = (await logAll()).sort((a, b) => a.at - b.at);
+  if (!recs.length) { toast("No throws saved yet.", "warn", 2500); return; }
+  const b64 = a => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let t = ""; for (let i = 0; i < u.length; i += 8192) t += String.fromCharCode(...u.subarray(i, i + 8192)); return btoa(t); };
+  const out = recs.map(r => ({ ...r, S: undefined, samples_b64_int16_gx_gy_gz_ax_ay_az: r.S ? b64(r.S) : null }));
+  saveFile(`disc_throw_log_${stamp()}.json`, JSON.stringify({ format: "disctracker throw log v1", exported: new Date().toISOString(), throws: out }), "application/json");
+};
+// throws saved earlier come back into the list, so they can still be labeled
+logAll().then(recs => {
+  live.logStats = { total: recs.length, labeled: recs.filter(r => r.label).length };
+  const old = recs.sort((a, b) => a.at - b.at).slice(-30).filter(r => !live.caps.some(x => x.id === r.id)).map(r => {
+    const e = { id: r.id, at: r.at, c: r.c, S: r.S, info: r.info, missing: r.missing, label: r.label, liveEst: r.live, old: true };
+    try { e.an = analyzeCapture(r.S, r.info); } catch { e.an = null; }
+    e.flight = capFlight(e); return e;
+  });
+  live.caps.unshift(...old);
+  if (!live.sel && live.caps.length) live.sel = live.caps[live.caps.length - 1];
+  renderThrowSel(); renderLastThrow(); renderLog(true);
+  if (settings.mode === "live") renderBreakdown();
+}).catch(err => { console.warn("throw log", err); $("lgCount").textContent = "This browser can't save throws."; });
+
+// ================================================================ throws
+function currentDisc() { return { ...settings.disc, weightG: settings.disc.weightG || 175 }; }
+function addThrow(t, test) {
+  if (session.some(e => e.key === t.key)) return null;
+  const e = {
+    key: t.key || `test-${Date.now()}`, at: Date.now(), test: !!test,
+    t: { speed: t.speed, spin: t.spin, hyzer: t.hyzer, nose: t.nose, launch: t.launch, wobble: t.wobble, ccw: t.ccw,
+         wobbleOld: !!t.wobbleOld, spinSrc: t.spinSrc || 0, flags: t.flags || 0,
+         ...(t.rebuilt ? { rebuilt: true, spinAtLeast: !!t.spinAtLeast, rebuiltSpin: t.rebuiltSpin, uncounted: !!t.uncounted, discSaid: t.discSaid } : {}) },
+    disc: currentDisc(), cond: { windMph: settings.windMph, windFrom: settings.windFrom, heightFt: settings.heightFt },
+  };
+  const fl = flightFor(e);
+  e.res = { distFt: fl.distFt, lateralFt: fl.lateralFt, maxHFt: fl.maxHFt, timeS: fl.timeS };
+  session.push(e); saveSession(); renderSession();
+  sendToTechDisc(e);
+  return e;
+}
+function flightFor(e) {
+  return simulateFlight({ speedMph: e.t.speed, spinRpm: e.t.spin, hyzer: e.t.hyzer, nose: e.t.nose, launch: e.t.launch,
+    wobble: e.t.wobble, ccw: e.t.ccw, disc: e.disc, windMph: e.cond.windMph, windFrom: e.cond.windFrom, heightFt: e.cond.heightFt });
+}
+function testThrow() {
+  const r = (a, b) => a + Math.random() * (b - a);
+  const t = { speed: r(44, 64), spin: Math.round(r(700, 1150)), hyzer: r(-4, 10), nose: r(-3, 2), launch: r(5, 13), wobble: r(0.5, 6),
+              ccw: false, flags: 1, key: `test-${Date.now()}` };
+  play(addThrow(t, true), true);
+}
+
+function renderSession() {
+  const real = session.filter(e => !e.test);
+  const list = $("sessList");
+  const best = real.length ? Math.max(...real.map(e => e.res.distFt)) : 0;
+  list.innerHTML = session.slice().reverse().slice(0, 60).map((e, i) => {
+    const n = session.length - i;
+    return `<li data-key="${e.key}" class="${current && current.key === e.key ? "sel" : ""}">
+      <span class="n">#${n}</span>
+      <span><span class="d ${!e.test && e.res.distFt === best ? "best" : ""}">${fmt(dist(e.res.distFt))} ${unit()}</span>${e.test ? '<span class="tag">TEST</span>' : ""}
+        <span class="m">${fmt(e.t.speed, 1)} mph · ${e.t.spinAtLeast ? "≥" : ""}${fmt(e.t.spin)} rpm · ${e.disc.name}${e.t.rebuilt ? " · rebuilt" : ""}</span></span>
+      <a href="${techdiscSimUrl(e.t, e.disc)}" target="_blank" rel="noopener" title="Open this throw in TechDisc's simulator">TD ↗</a></li>`;
+  }).join("");
+  list.querySelectorAll("li").forEach(li => li.onclick = ev => {
+    if (ev.target.closest("a")) return;
+    const e = session.find(x => x.key === li.dataset.key); if (e) play(e, false);
+  });
+  if (!real.length) { $("sessSummary").textContent = session.length ? "Only test throws so far." : "No throws yet."; return; }
+  const avg = k => real.reduce((a, e) => a + e.t[k], 0) / real.length;
+  const avgD = real.reduce((a, e) => a + e.res.distFt, 0) / real.length;
+  $("sessSummary").innerHTML = `${real.length} throw${real.length > 1 ? "s" : ""} · best <b class="best">${fmt(dist(best))} ${unit()}</b> · ` +
+    `average ${fmt(dist(avgD))} ${unit()}, ${fmt(avg("speed"), 1)} mph, ${fmt(avg("spin"))} rpm`;
+}
+
+function showNumbers(e) {
+  const t = e.t, ds = t.rebuilt && t.discSaid, was = (v, d = 0) => ds ? ` · disc said ${fmt(v, d)}` : "";
+  $("vSpeed").textContent = fmt(t.speed, 1); $("sSpeed").textContent = `${fmt(t.speed * 1.609, 0)} km/h${ds ? was(ds.speed, 1) : ""}`;
+  $("vSpin").textContent = (t.spinAtLeast ? "≥" : "") + fmt(t.spin);
+  $("sSpin").textContent = `${t.ccw ? "counter-clockwise" : "clockwise"}${t.spinSrc ? " · from accel" : ""}${ds ? was(ds.spin) : ""}`;
+  $("vHyzer").textContent = signed(t.hyzer); $("sHyzer").textContent = Math.abs(t.hyzer) < 3 ? "flat" : t.hyzer > 0 ? "hyzer" : "anhyzer";
+  $("vNose").textContent = signed(t.nose); $("sNose").textContent = t.nose > 0.5 ? "nose up" : t.nose < -0.5 ? "nose down" : "neutral";
+  $("vLaunch").textContent = signed(t.launch); $("sLaunch").textContent = "above horizontal";
+  $("vWobble").textContent = (t.wobbleOld ? "≈" : "") + fmt(t.wobble, 1);
+  $("sWobble").textContent = t.wobbleOld ? "converted (old firmware)" : t.wobble < 2 ? "clean" : t.wobble < 5 ? "some" : "a lot";
+  $("uDist").textContent = unit();
+  $("flightInfo").innerHTML = `<b>${e.test ? "Test throw" : styleName(t)}</b> · ${e.disc.name} (${e.disc.speed}/${e.disc.glide}/${e.disc.turn}/${e.disc.fade})` +
+    (t.rebuilt ? ` · <span style="color:#ff8a4c">rebuilt numbers${t.uncounted ? " (the disc didn't count this one)" : ""}</span>` : "") +
+    (e.cond.windMph ? ` · wind ${e.cond.windMph} mph ${({ 0: "headwind", 180: "tailwind", 270: "from the left", 90: "from the right" })[e.cond.windFrom] || ""}` : "");
+}
+function showResult(e) {
+  const r = e.res;
+  $("vDist").textContent = fmt(dist(r.distFt));
+  const lat = dist(Math.abs(r.lateralFt));
+  $("sDist").textContent = `${lat < 1 ? "dead center" : fmt(lat) + " " + unit() + (r.lateralFt > 0 ? " left" : " right")} · ` +
+    `peak ${fmt(dist(r.maxHFt))} ${unit()} · ${fmt(r.timeS, 1)} s in the air`;
+}
+function idleMsg() {
+  if (settings.game && settings.mode !== "live" && !round.holeDone && connected) {
+    const b = basketOf(COURSE[round.hole]), d = Math.hypot(b.x - round.lie.x, b.y - round.lie.y);
+    centerMsg(`${round.strokes ? "Next shot" : `Hole ${round.hole + 1} – tee off`}<small>${fmt(dist(d))} ${unit()} to the basket · ← → to aim</small>`, 0);
+    return;
+  }
+  if (!connected || settings.game) { centerMsg(""); return; }
+  centerMsg("Ready – throw!<small>The result appears here automatically</small>", 0);
+}
+
+// ================================================================ TechDisc
+let tdWin = null;
+function sendToTechDisc(e) {
+  const url = techdiscSimUrl(e.t, e.disc);
+  if (settings.mode !== "ours") $("tdFrame").src = url;
+  if (tdWin && !tdWin.closed) { try { tdWin.location.href = url; } catch {} }
+}
+$("tdWinBtn").onclick = () => {
+  const last = session[session.length - 1];
+  const url = last ? techdiscSimUrl(last.t, last.disc) : "https://techdisc.com/simulate";
+  tdWin = window.open(url, "disctracker-techdisc");          // keep the handle (no noopener) to update it per throw
+  $("tdWinNote").textContent = tdWin ? "Open – every throw goes there too." : "Your browser blocked the window – allow pop-ups for this page.";
+};
+
+// ================================================================ 3D scene (units: feet)
+// Simulator axes x = downrange, y = left, z = up  ->  three.js X = right, Y = up, Z = toward the thrower.
+const toV = (x, y, z) => new THREE.Vector3(-y, z, -x);
+// Where a shot is thrown from: the lie (simulator x, y in ft) and the heading (rad, + = left). Each flight is
+// simulated straight downrange from the origin, then placed here. Without the game it is the tee, straight ahead.
+const TEE_FRAME = { x: 0, y: 0, psi: 0 }, shot = { ...TEE_FRAME };
+function W3(v, fr = shot) {                                // shot-local three.js point -> world
+  const c = Math.cos(fr.psi), s = Math.sin(fr.psi);
+  return new THREE.Vector3(v.x * c + v.z * s - fr.y, v.y, -v.x * s + v.z * c - fr.x);
+}
+let renderer = null, scene, camera, discGroup, discBody, blob, tube = null, ghostTube = null, landRing, landLabel, markers = [];
+const UP = new THREE.Vector3(0, 1, 0);
+const camPos = new THREE.Vector3(0, 8, 24), camLook = new THREE.Vector3(0, 6, -160);
+
+function labelSprite(text, color = "#ffffff", scale = 1) {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 128;
+  const g = c.getContext("2d");
+  g.font = "bold 76px system-ui, Segoe UI, sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.lineWidth = 12; g.strokeStyle = "rgba(0,0,0,0.55)"; g.strokeText(text, 256, 66);
+  g.fillStyle = color; g.fillText(text, 256, 66);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthWrite: false, transparent: true }));
+  s.scale.set(32 * scale, 8 * scale, 1);
+  return s;
+}
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+function init3D() {
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas: $("view"), antialias: true });
+  } catch (e) { toast("3D graphics are not available in this browser – numbers only.", "bad", 9000); return; }
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  scene = new THREE.Scene();
+  const sky = new THREE.Color(0x9fd0f5);
+  scene.background = sky; scene.fog = new THREE.Fog(sky, 600, 2600);
+  camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.3, 6000);
+  scene.add(new THREE.HemisphereLight(0xeef7ff, 0x3a5a2c, 1.6));
+  const sun = new THREE.DirectionalLight(0xfff4e0, 2.2); sun.position.set(-300, 600, 250); scene.add(sun);
+
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.MeshLambertMaterial({ color: 0x3e7a34 }));
+  ground.rotation.x = -Math.PI / 2; scene.add(ground);
+  const fair = new THREE.Mesh(new THREE.PlaneGeometry(110, 760), new THREE.MeshLambertMaterial({ color: 0x5aa046 }));
+  fair.rotation.x = -Math.PI / 2; fair.position.set(0, 0.04, -360); scene.add(fair);
+  const tee = new THREE.Mesh(new THREE.BoxGeometry(5, 0.4, 12), new THREE.MeshLambertMaterial({ color: 0x9a9a92 }));
+  tee.position.set(0, 0.2, 2); scene.add(tee);
+
+  // trees along both sides, for depth
+  const R = rng(7), N = 140;
+  const cone = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 8), new THREE.MeshLambertMaterial({ color: 0x2c5e2a }), N);
+  const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.16, 1, 6), new THREE.MeshLambertMaterial({ color: 0x5a3d22 }), N);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+  for (let i = 0; i < N; i++) {
+    const side = i % 2 ? 1 : -1, x = side * (75 + R() * 230), z = 60 - R() * 900, h = 24 + R() * 30, w = h * (0.28 + R() * 0.1);
+    m.compose(new THREE.Vector3(x, h * 0.62, z), q, new THREE.Vector3(w, h * 0.8, w)); cone.setMatrixAt(i, m);
+    m.compose(new THREE.Vector3(x, h * 0.12, z), q, new THREE.Vector3(w * 0.9, h * 0.25, w * 0.9)); trunk.setMatrixAt(i, m);
+  }
+  scene.add(cone, trunk);
+
+  buildMarkers();
+  discGroup = new THREE.Group();
+  discBody = new THREE.Group();
+  const R0 = 0.346, H0 = 0.07;                                  // real disc: 21.1 cm across, ~2 cm tall (ft)
+  const shell = new THREE.Mesh(new THREE.CylinderGeometry(R0, R0 * 0.9, H0, 48), new THREE.MeshStandardMaterial({ color: 0xff7a1a, roughness: 0.4 }));
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(R0 * 1.7, H0 * 0.25, R0 * 0.22), new THREE.MeshStandardMaterial({ color: 0x1b1b1b, roughness: 0.6 }));
+  stripe.position.y = H0 / 2 + 0.002;
+  discBody.add(shell, stripe); discGroup.add(discBody); scene.add(discGroup);
+  blob = new THREE.Mesh(new THREE.CircleGeometry(R0, 32), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false }));
+  blob.rotation.x = -Math.PI / 2; scene.add(blob);
+  landRing = new THREE.Mesh(new THREE.RingGeometry(3, 4.2, 48), new THREE.MeshBasicMaterial({ color: 0xffd34d, side: THREE.DoubleSide }));
+  landRing.rotation.x = -Math.PI / 2; landRing.visible = false; scene.add(landRing);
+  applyScale();
+  resize(); window.addEventListener("resize", resize);
+  placeIdleDisc();
+  requestAnimationFrame(frame);
+}
+function applyScale() { if (discGroup) discGroup.scale.setScalar(settings.scale); if (blob) blob.scale.setScalar(settings.scale); }
+function buildMarkers() {
+  if (!scene) return;
+  markers.forEach(o => scene.remove(o)); markers = [];
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 });
+  const step = settings.units === "m" ? 10 * FT_PER_M : 50, labelEvery = settings.units === "m" ? 5 : 2;
+  for (let i = 1; i * step <= 700; i++) {
+    const zf = -i * step, major = i % labelEvery === 0;
+    const bar = new THREE.Mesh(new THREE.PlaneGeometry(110, major ? 0.9 : 0.4), lineMat);
+    bar.rotation.x = -Math.PI / 2; bar.position.set(0, 0.08, zf); scene.add(bar); markers.push(bar);
+    if (major) {
+      const txt = settings.units === "m" ? `${Math.round(i * 10)} m` : `${i * 50} ft`;
+      for (const sx of [-1, 1]) { const s = labelSprite(txt); s.position.set(sx * 66, 5, zf); scene.add(s); markers.push(s); }
+    }
+  }
+}
+function resize() {
+  if (!renderer) return;
+  const c = $("view"), w = c.clientWidth || 1, h = c.clientHeight || 1;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+  trailLines.forEach(l => l.material.resolution.set(w, h));
+}
+// Trail drawn as a line with a constant on-screen width (pixels), so it is just as
+// visible 400 ft away and never balloons when it passes close to the camera.
+function setTube(path, ghost) {
+  if (path.length < 2) return null;
+  const arr = [];
+  for (const p of path) { const v = toV(p.x, p.y, Math.max(0.15, p.z)); arr.push(v.x, v.y, v.z); }
+  const geo = new LineGeometry(); geo.setPositions(arr);
+  const mat = new LineMaterial({ color: ghost ? 0xffffff : 0xfff1b8, linewidth: ghost ? 2.5 : 4.5, transparent: !!ghost,
+                                 opacity: ghost ? 0.45 : 1, depthWrite: !ghost });
+  const c = $("view"); mat.resolution.set(c.clientWidth || 1, c.clientHeight || 1);
+  const line = new Line2(geo, mat); line.computeLineDistances();
+  line.userData = { segs: path.length - 1 };
+  line.position.set(-shot.y, 0, -shot.x); line.rotation.y = shot.psi;
+  scene.add(line); trailLines.add(line);
+  return line;
+}
+const trailLines = new Set();
+function revealTrail(line, frac) { line.geometry.instanceCount = Math.max(0, Math.floor(frac * line.userData.segs)); }
+function dropMesh(m) { if (m) { scene.remove(m); trailLines.delete(m); m.geometry.dispose(); m.material.dispose(); } }
+
+// ---------------------------------------------------------------- animation
+let current = null, flight = null, animT = 0, animStart = 0, animating = false, landedAt = 0, spinVis = 0, wobPhase = 0, lastFrame = 0;
+function play(e, fresh) {
+  if (fresh && settings.game && !e.frame) gameShot(e);      // the game: thrown from where the last one landed
+  current = e;
+  Object.assign(shot, e.frame || TEE_FRAME);
+  flight = flightFor(e);
+  if (e.game) flight = gameFlight(e, flight);                 // through the chains: the flight stops in the basket
+  if (fresh && e.game && !e.game.scored) gameScore(e, flight);
+  e.res = { distFt: flight.distFt, lateralFt: flight.lateralFt, maxHFt: flight.maxHFt, timeS: flight.timeS };
+  showNumbers(e);
+  $("vDist").textContent = "0"; $("sDist").textContent = "in the air…";
+  centerMsg("");
+  if (scene) {
+    if (!settings.game) { dropMesh(ghostTube); ghostTube = null; }
+    if (tube) {                                         // the previous flight stays as a faint full trail
+      tube.material.color.set(0xffffff); tube.material.opacity = 0.45; tube.material.transparent = true;
+      tube.material.linewidth = 2.5; tube.material.depthWrite = false; tube.material.needsUpdate = true;
+      revealTrail(tube, 1);
+      if (settings.game) holeTrails.push(tube); else ghostTube = tube;   // the game keeps every shot of the hole
+    }
+    tube = setTube(flight.path, false);
+    if (tube) revealTrail(tube, 0);
+    if (landLabel) { scene.remove(landLabel); landLabel = null; }
+    landRing.visible = false;
+    if (fresh || settings.camera !== "top") { camPos.copy(W3(new THREE.Vector3(0, 8, 26))); camLook.copy(W3(new THREE.Vector3(0, 8, -120))); }
+  }
+  animT = 0; animStart = performance.now(); animating = true; landedAt = 0;
+  renderSession();
+}
+function pointAt(t) {
+  const P = flight.path, i = Math.min(P.length - 2, Math.max(0, Math.floor(t / 0.02)));
+  const a = P[i], b = P[i + 1], f = Math.max(0, Math.min(1, (t - a.t) / Math.max(1e-6, b.t - a.t)));
+  const L = (u, v) => u + (v - u) * f;
+  return { x: L(a.x, b.x), y: L(a.y, b.y), z: L(a.z, b.z), nx: L(a.nx, b.nx), ny: L(a.ny, b.ny), nz: L(a.nz, b.nz), w: L(a.w, b.w) };
+}
+function placeIdleDisc() {
+  if (!discGroup) return;
+  discGroup.position.copy(W3(new THREE.Vector3(0, settings.heightFt, -1.5)));
+  let tilt = new THREE.Quaternion();
+  if (liveUp) {                                        // mirror the real disc's tilt while it waits
+    // liveUp = world "up" seen in the disc's own axes. Turned to the USB-C front the
+    // phone app set (forward, left, up), the disc's normal in the world is (-uf, -ul, uz).
+    const a = frontDeg * Math.PI / 180, u = liveUp;
+    const uf = u[0] * Math.cos(a) + u[1] * Math.sin(a), ul = -u[0] * Math.sin(a) + u[1] * Math.cos(a);
+    const up3 = new THREE.Vector3(ul, u[2], uf);       // three.js: X right, Y up, Z toward the thrower
+    if (up3.lengthSq() > 1e-6) tilt.setFromUnitVectors(UP, up3.normalize());
+  }
+  discGroup.quaternion.copy(new THREE.Quaternion().setFromAxisAngle(UP, shot.psi).multiply(tilt));
+  blob.position.copy(W3(new THREE.Vector3(0, 0.07, -1.5)));
+}
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (settings.mode === "live") {                       // the live page replaces the 3D view
+    drawLive();
+    if (now - live.uiT > 120) { live.uiT = now; updateLiveSide(); }
+    return;
+  }
+  const realDt = lastFrame ? (now - lastFrame) / 1000 : 0.016; lastFrame = now;
+  const animDt = Math.min(0.25, realDt);              // exponential smoothing: stable at any step size
+  const dt = animDt;
+  if (!renderer) return;
+  const smooth = k => 1 - Math.exp(-k * dt);
+  // the game: a moment after a shot lands, the view moves behind the disc for the next one
+  const ready = settings.game && !animating && (!current || !landedAt || now - landedAt > 2500) && !round.holeDone;
+  if (aimLine) aimLine.visible = ready && settings.mode !== "techdisc";
+  if (flight && current && !ready) {
+    if (animating) {
+      animT = (now - animStart) / 1000 * settings.speedX;    // wall clock: real time at any frame rate
+      if (animT >= flight.timeS) { animT = flight.timeS; animating = false; landedAt = now; onLanded(); }
+    }
+    const p = pointAt(animT), posL = toV(p.x, p.y, Math.max(0.1, p.z)), pos = W3(posL);
+    discGroup.position.copy(pos);
+    // orientation: disc normal from the simulation, plus a visible (slowed) wobble and spin
+    const n3 = new THREE.Vector3(-p.ny, p.nz, -p.nx).normalize().applyAxisAngle(UP, shot.psi);
+    const u = new THREE.Vector3().crossVectors(n3, new THREE.Vector3(1, 0, 0)); if (u.lengthSq() < 1e-6) u.set(0, 0, 1); u.normalize();
+    const v = new THREE.Vector3().crossVectors(n3, u).normalize();
+    if (animating) { wobPhase += animDt * 2 * Math.PI * 3; spinVis += animDt * 2 * Math.PI * Math.min(4, current.t.spin / 60) * (current.t.ccw ? 1 : -1); }
+    const wr = Math.tan(Math.min(30, p.w) * Math.PI / 180);
+    const nW = n3.clone().addScaledVector(u, wr * Math.cos(wobPhase)).addScaledVector(v, wr * Math.sin(wobPhase)).normalize();
+    const qa = new THREE.Quaternion().setFromUnitVectors(UP, nW);
+    discGroup.quaternion.copy(qa).multiply(new THREE.Quaternion().setFromAxisAngle(UP, spinVis));
+    blob.position.set(pos.x, 0.07, pos.z);
+    const hgt = Math.max(0, p.z);
+    blob.scale.setScalar(settings.scale * (1 + hgt / 25)); blob.material.opacity = 0.38 / (1 + hgt / 12);
+    if (tube) revealTrail(tube, flight.timeS > 0 ? animT / flight.timeS : 1);
+    if (animating) $("vDist").textContent = fmt(dist(Math.hypot(p.x, p.y)));
+    updateCamera(posL, p, smooth);
+  } else {
+    if (settings.game) {
+      Object.assign(shot, nextFrame()); placeAimLine();
+      if (landLabel) landLabel.visible = false;            // the disc sits there now
+      const b = basketOf(COURSE[round.hole]);
+      if (basketLabel) basketLabel.visible = Math.hypot(b.x - round.lie.x, b.y - round.lie.y) > 100;   // up close it fills the screen
+    }
+    placeIdleDisc();
+    camPos.lerp(W3(new THREE.Vector3(0, 8, 24)), smooth(2)); camLook.lerp(W3(new THREE.Vector3(0, 6, -160)), smooth(2));
+    camera.fov += (50 - camera.fov) * smooth(3); camera.updateProjectionMatrix();
+  }
+  camera.position.copy(camPos); camera.lookAt(camLook);
+  renderer.render(scene, camera);
+}
+function updateCamera(pos, p, smooth) {
+  const land = flight.path[flight.path.length - 1], landV = toV(land.x, land.y, 0), d = Math.max(60, flight.distFt);
+  const overview = !animating;
+  let wantPos, wantLook, wantFov = 50;
+  if (settings.camera === "top") {
+    wantPos = new THREE.Vector3(landV.x * 0.5, d * 1.05 + 40, landV.z * 0.5 + d * 0.18);
+    wantLook = new THREE.Vector3(landV.x * 0.5, 0, landV.z * 0.5);
+  } else if (settings.camera === "tee") {
+    wantPos = new THREE.Vector3(0, 7, 20);
+    wantLook = overview ? new THREE.Vector3(landV.x * 0.7, 8, landV.z * 0.8) : pos.clone();
+    const r = camPos.distanceTo(overview ? landV : pos);
+    wantFov = Math.max(10, Math.min(50, 2 * Math.atan(55 / Math.max(1, r)) * 180 / Math.PI));
+  } else if (!overview) {                              // follow: behind and above the disc
+    wantPos = new THREE.Vector3(pos.x * 0.9, Math.max(4, pos.y * 0.6 + 4.5), pos.z + 24);
+    wantLook = new THREE.Vector3(pos.x, pos.y * 0.92, pos.z - 30);
+  } else {                                             // after landing: rise to show the whole flight
+    wantPos = new THREE.Vector3(landV.x * 0.3, d * 0.34 + 32, d * 0.3 + 70);
+    wantLook = new THREE.Vector3(landV.x * 0.5, 0, landV.z * 0.42);
+  }
+  const k = overview ? 1.6 : 3.5;
+  camPos.lerp(W3(wantPos), smooth(k)); camLook.lerp(W3(wantLook), smooth(k * 1.6));
+  camera.fov += (wantFov - camera.fov) * smooth(3); camera.updateProjectionMatrix();
+}
+function onLanded() {
+  if (!current) return;
+  showResult(current);
+  if (scene) {
+    const land = flight.path[flight.path.length - 1], lv = W3(toV(land.x, land.y, 0), current.frame || TEE_FRAME);
+    landRing.position.set(lv.x, 0.1, lv.z); landRing.visible = !current.game?.holed;
+    if (landLabel) scene.remove(landLabel);
+    landLabel = labelSprite(`${fmt(dist(current.res.distFt))} ${unit()}`, "#ffd34d", 2.4);
+    landLabel.position.set(lv.x, 16, lv.z); landLabel.visible = !current.game?.holed; scene.add(landLabel);
+  }
+  if (current.game) gameLanded(current);
+  setTimeout(() => { if (!animating) idleMsg(); }, current.game ? 4500 : 2500);
+}
+
+// ================================================================ the game: play a round
+// Nine holes laid down the same fairway (basket x = length, y = offset, + = left). Every throw that arrives is the
+// next shot: flown from the lie, aimed at the basket plus the aim offset. Passing through the chains (within 1.15 ft
+// of the pole, 1.9-4.6 ft up) is in; landing within the tap-in distance counts one more throw to finish.
+const COURSE = [
+  { len: 210, off: 0, par: 3 }, { len: 275, off: -25, par: 3 }, { len: 320, off: 30, par: 3 },
+  { len: 175, off: 12, par: 3 }, { len: 355, off: -35, par: 3 }, { len: 245, off: 22, par: 3 },
+  { len: 300, off: -15, par: 3 }, { len: 230, off: 35, par: 3 }, { len: 430, off: 0, par: 4 }];
+const RKEY = "disctracker.round.v1", MAX_STROKES = 10, CATCH_R = 1.15;
+const freshRound = () => ({ hole: 0, scores: COURSE.map(() => null), strokes: 0, lie: { x: 0, y: 0 }, aim: 0, holeDone: false, over: false, hist: [] });
+let round = Object.assign(freshRound(), loadJSON(RKEY, {}));
+let basket = null, basketLabel = null, aimLine = null, holeTrails = [];
+const saveRound = () => saveJSON(RKEY, round);
+const basketOf = h => ({ x: h.len, y: h.off });
+const scoreName = (n, par) => n === 1 ? "Ace!" : ({ "-3": "Albatross", "-2": "Eagle", "-1": "Birdie", "0": "Par", "1": "Bogey", "2": "Double bogey",
+  "3": "Triple bogey" })[n - par] || `+${n - par}`;
+function nextFrame() {
+  const b = basketOf(COURSE[round.hole]), L = round.lie;
+  return { x: L.x, y: L.y, psi: Math.atan2(b.y - L.y, b.x - L.x) - round.aim * D2R };
+}
+function gameShot(e) {
+  if (round.over) { newRound(); toast("New round – hole 1.", "", 3000); }
+  else if (round.holeDone) nextHole();
+  const { hist, ...snap } = round; round.hist.push(JSON.stringify(snap));     // for a mulligan
+  e.frame = nextFrame(); e.game = { hole: round.hole, stroke: round.strokes + 1 };
+}
+function gameFlight(e, fl) {
+  const b = basketOf(COURSE[e.game.hole]), fr = e.frame, c = Math.cos(fr.psi), s = Math.sin(fr.psi), P = fl.path;
+  for (let i = 1; i < P.length; i++) {
+    const A = P[i - 1], B = P[i];
+    for (let k = 1; k <= 4; k++) {
+      const f = k / 4, x = A.x + (B.x - A.x) * f, y = A.y + (B.y - A.y) * f, z = A.z + (B.z - A.z) * f;
+      if (Math.hypot(fr.x + x * c - y * s - b.x, fr.y + x * s + y * c - b.y) >= CATCH_R || z <= 1.9 || z >= 4.6) continue;
+      // in the chains: drop into the tray (the path keeps its 0.02 s steps)
+      const dx = b.x - fr.x, dy = b.y - fr.y, bx = dx * c + dy * s, by = -dx * s + dy * c, path = P.slice(0, i), t0 = path[i - 1].t;
+      for (let j = 1; j <= 15; j++) { const u = Math.min(1, j / 6); path.push({ ...A, t: t0 + 0.02 * j, x: x + (bx - x) * u, y: y + (by - y) * u, z: z + (2.4 - z) * u, w: 0 }); }
+      e.game.holed = true;
+      return { ...fl, path, timeS: path[path.length - 1].t, distFt: Math.hypot(bx, by), lateralFt: by, holed: true };
+    }
+  }
+  return fl;
+}
+function gameScore(e, fl) {
+  e.game.scored = true;
+  const land = fl.path[fl.path.length - 1], fr = e.frame, c = Math.cos(fr.psi), s = Math.sin(fr.psi);
+  const wx = fr.x + land.x * c - land.y * s, wy = fr.y + land.x * s + land.y * c, b = basketOf(COURSE[round.hole]);
+  const left = Math.hypot(b.x - wx, b.y - wy);
+  round.strokes++; round.lie = { x: wx, y: wy }; round.aim = 0; e.game.left = left;
+  if (fl.holed) e.game.result = "holed";
+  else if (left <= (settings.gimme ?? 10)) { round.strokes++; e.game.result = "tapin"; }
+  else if (round.strokes >= MAX_STROKES) e.game.result = "pickup";
+  if (e.game.result) {
+    round.scores[round.hole] = round.strokes; round.holeDone = true; round.lie = { ...b };
+    if (round.scores.every(v => v != null)) round.over = true;
+  }
+  e.game.strokes = round.strokes; e.game.par = COURSE[round.hole].par;
+  saveRound();
+}
+function gameLanded(e) {
+  const g = e.game, d = `${fmt(dist(g.left))} ${unit()}`;
+  if (g.result) {
+    const head = g.result === "holed" ? (g.strokes === 1 ? "ACE!" : "In the basket!") : g.result === "tapin" ? `Tap-in from ${d}` : "Picked up";
+    const total = round.scores.reduce((a, v) => a + (v || 0), 0), par = COURSE.reduce((a, h, i) => a + (round.scores[i] != null ? h.par : 0), 0);
+    centerMsg(`${head}<small>${scoreName(g.strokes, g.par)} · ${g.strokes} on a par ${g.par}` +
+      (round.over ? ` · round over: ${total} (${total - par > 0 ? "+" : ""}${total - par || "even"})` : " · throw again for the next hole") + `</small>`, 0);
+  } else centerMsg(`${d} to the basket<small>Throw ${g.stroke} done – throw your next shot</small>`, 0);
+  renderGame();
+}
+function clearHole() {
+  holeTrails.forEach(dropMesh); holeTrails = [];
+  dropMesh(tube); tube = null; dropMesh(ghostTube); ghostTube = null;
+  current = null; flight = null; animating = false;
+  if (landRing) landRing.visible = false;
+  if (landLabel) { scene.remove(landLabel); landLabel = null; }
+}
+function nextHole() {
+  if (round.hole >= COURSE.length - 1) { newRound(); return; }
+  Object.assign(round, { hole: round.hole + 1, strokes: 0, lie: { x: 0, y: 0 }, aim: 0, holeDone: false, hist: [] });
+  clearHole(); saveRound(); placeBasket(); renderGame(); idleMsg();
+}
+function newRound() { round = freshRound(); clearHole(); saveRound(); placeBasket(); renderGame(); idleMsg(); }
+function restartHole() {
+  Object.assign(round, { strokes: 0, lie: { x: 0, y: 0 }, aim: 0, holeDone: false, over: false, hist: [] });
+  round.scores[round.hole] = null; clearHole(); saveRound(); renderGame(); idleMsg();
+}
+function gameUndo(quiet) {
+  if (!round.hist.length) { if (!quiet) toast("No shot to take back on this hole.", "", 2500); return false; }
+  const hist = round.hist, prev = JSON.parse(hist.pop());
+  round = Object.assign(freshRound(), prev, { hist });
+  dropMesh(tube); tube = null; current = null; flight = null; animating = false;
+  if (landRing) landRing.visible = false;
+  if (landLabel) { scene.remove(landLabel); landLabel = null; }
+  saveRound(); renderGame(); if (!quiet) { toast("Mulligan – that shot doesn't count.", "", 2500); idleMsg(); }
+  return true;
+}
+function setGame(on) {
+  settings.game = on; saveSettings();
+  document.documentElement.classList.toggle("game", on);
+  clearHole();
+  Object.assign(shot, on ? nextFrame() : TEE_FRAME);
+  if (basket) basket.visible = on;
+  if (on) placeBasket();
+  renderGame(); idleMsg();
+}
+function buildBasket() {
+  const g = new THREE.Group(), metal = new THREE.MeshStandardMaterial({ color: 0xc9ccd1, metalness: 0.6, roughness: 0.35 });
+  const yellow = new THREE.MeshStandardMaterial({ color: 0xffd21f, roughness: 0.5, side: THREE.DoubleSide });
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 5.2, 12), metal); pole.position.y = 2.6;
+  const tray = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 0.95, 0.65, 32, 1, true), yellow); tray.position.y = 2.2;
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(0.95, 32), yellow); floor.rotation.x = -Math.PI / 2; floor.position.y = 1.9;
+  const band = new THREE.Mesh(new THREE.TorusGeometry(1.05, 0.06, 8, 40), yellow); band.rotation.x = Math.PI / 2; band.position.y = 4.5;
+  g.add(pole, tray, floor, band);
+  const chainMat = new THREE.MeshStandardMaterial({ color: 0xdfe3e8, metalness: 0.7, roughness: 0.3 });
+  for (let k = 0; k < 14; k++) {                      // chains from the band in toward the pole
+    const a = k / 14 * 2 * Math.PI, top = new THREE.Vector3(Math.cos(a), 4.45, Math.sin(a)), bot = new THREE.Vector3(0.2 * Math.cos(a), 2.6, 0.2 * Math.sin(a));
+    const dir = bot.clone().sub(top), ch = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, dir.length(), 4), chainMat);
+    ch.position.copy(top).addScaledVector(dir, 0.5); ch.quaternion.setFromUnitVectors(UP, dir.normalize()); g.add(ch);
+  }
+  // seen from 400 ft away the basket is a speck: a tall orange beam marks it, and a ring on the ground marks 33 ft
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 70, 12, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xff8a1f, transparent: true, opacity: 0.3, depthWrite: false }));
+  beam.position.y = 40;
+  const c1 = new THREE.Mesh(new THREE.RingGeometry(32.5, 33, 96), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
+  c1.rotation.x = -Math.PI / 2; c1.position.y = 0.09;
+  g.add(beam, c1);
+  g.visible = false; scene.add(g);
+  return g;
+}
+function placeBasket() {
+  if (!scene) return;
+  if (!basket) basket = buildBasket();
+  const h = COURSE[round.hole], b = basketOf(h);
+  basket.position.copy(toV(b.x, b.y, 0)); basket.visible = !!settings.game;
+  if (basketLabel) basket.remove(basketLabel);
+  basketLabel = labelSprite(`Hole ${round.hole + 1} · par ${h.par}`, "#ffd34d", 1.3); basketLabel.position.y = 16; basket.add(basketLabel);
+}
+function placeAimLine() {
+  if (!scene) return;
+  if (!aimLine) {
+    const geo = new THREE.PlaneGeometry(0.7, 1); geo.rotateX(-Math.PI / 2); geo.translate(0, 0, -0.5);
+    aimLine = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false }));
+    scene.add(aimLine);
+  }
+  const b = basketOf(COURSE[round.hole]), L = round.lie;
+  aimLine.position.set(-L.y, 0.12, -L.x); aimLine.rotation.y = shot.psi;
+  aimLine.scale.z = Math.min(420, Math.hypot(b.x - L.x, b.y - L.y) + 15);
+}
+function setAim(a) { round.aim = Math.max(-60, Math.min(60, a)); saveRound(); renderGame(); }
+function renderGame() {
+  $("gameHud").classList.toggle("hidden", !settings.game);
+  $("gameBtn").textContent = $("gameBtn2").textContent = settings.game ? "⛳ Stop playing" : "⛳ Play a round";
+  if (!settings.game) return;
+  const h = COURSE[round.hole], b = basketOf(h), d = Math.hypot(b.x - round.lie.x, b.y - round.lie.y);
+  $("ghHole").textContent = `Hole ${round.hole + 1}`;
+  $("ghInfo").textContent = `par ${h.par} · ${fmt(dist(h.len))} ${unit()}`;
+  const sc = round.scores[round.hole];
+  $("ghState").innerHTML = round.holeDone ? `Done in <b>${sc}</b> – ${scoreName(sc, h.par)}` :
+    round.strokes ? `<b>${fmt(dist(d))} ${unit()}</b> to the basket · ${round.strokes} throw${round.strokes > 1 ? "s" : ""} so far` :
+    `On the tee · <b>${fmt(dist(d))} ${unit()}</b> to the basket`;
+  $("ghAimRow").style.display = round.holeDone ? "none" : "";
+  $("ghAim").textContent = round.aim ? `Aim: ${Math.abs(round.aim)}° ${round.aim > 0 ? "right" : "left"} of the basket` : "Aim: straight at the basket";
+  $("ghNext").style.display = round.holeDone ? "" : "none";
+  $("ghNext").textContent = round.over ? "New round" : "Next hole ▸";
+  let tot = 0, par = 0;
+  round.scores.forEach((v, i) => { if (v != null) { tot += v; par += COURSE[i].par; } });
+  const rel = tot - par;
+  $("ghTotal").textContent = par ? `${tot} (${rel > 0 ? "+" : ""}${rel || "E"})` : "";
+  const cls = i => { const v = round.scores[i]; return (i === round.hole ? "cur " : "") + (v == null ? "" : v < COURSE[i].par ? "under" : v > COURSE[i].par ? "over" : ""); };
+  $("ghCard").style.gridTemplateColumns = `auto repeat(${COURSE.length}, 1fr) 1.3fr`;
+  $("ghCard").innerHTML = `<span class="h">Hole</span>${COURSE.map((_, i) => `<span class="h">${i + 1}</span>`).join("")}<span class="h">Tot</span>` +
+    `<span class="h">Par</span>${COURSE.map(c => `<span class="h">${c.par}</span>`).join("")}<span class="h">${COURSE.reduce((a, c) => a + c.par, 0)}</span>` +
+    `<span class="h">You</span>${COURSE.map((_, i) => `<span class="${cls(i)}">${round.scores[i] ?? (i === round.hole && round.strokes ? "·" : "")}</span>`).join("")}<span><b>${par ? tot : ""}</b></span>`;
+}
+$("gameBtn").onclick = $("gameBtn2").onclick = () => setGame(!settings.game);
+$("welcomeGame").onclick = () => { $("welcome").classList.add("hidden"); setGame(true); };
+new ResizeObserver(() => document.documentElement.style.setProperty("--top", `${Math.round($("top").getBoundingClientRect().bottom)}px`)).observe($("top"));
+$("ghLeft").onclick = () => setAim(round.aim - 2);
+$("ghRight").onclick = () => setAim(round.aim + 2);
+$("ghCenter").onclick = () => setAim(0);
+$("ghUndo").onclick = () => gameUndo(false);
+$("ghRestart").onclick = () => { if (round.strokes === 0 || confirm(`Start hole ${round.hole + 1} again?`)) restartHole(); };
+$("ghNext").onclick = () => round.over ? newRound() : nextHole();
+$("ghTest").onclick = testThrow;
+$("newRoundBtn").onclick = () => { if (confirm("Start a new round? This round's scores are cleared.")) newRound(); };
+$("gimmeSel").value = String(settings.gimme ?? 10);
+$("gimmeSel").onchange = () => { settings.gimme = +$("gimmeSel").value; saveSettings(); };
+
+// ================================================================ UI wiring
+function setMode(m) {
+  settings.mode = m; saveSettings();
+  document.body.className = "mode-" + m;
+  $("modeSel").value = m;
+  syncStream();
+  if (m === "live") setTimeout(() => { renderBreakdown(); renderLegend(); renderLog(); }, 60);
+  if (m !== "ours") {
+    const last = session[session.length - 1];
+    const url = last ? techdiscSimUrl(last.t, last.disc) : "https://techdisc.com/simulate";
+    if (m !== "live" && $("tdFrame").src !== url) $("tdFrame").src = url;
+  }
+  setTimeout(resize, 50);
+}
+function renderBag() {
+  $("bagSel").innerHTML = bag.map((b, i) => `<option value="${i}">${b.name} (${b.speed}/${b.glide}/${b.turn}/${b.fade})</option>`).join("") + `<option value="new">+ New disc…</option>`;
+  const i = bag.findIndex(b => b.name === settings.disc.name);
+  $("bagSel").value = i >= 0 ? i : "new";
+  fillDisc(settings.disc);
+}
+function fillDisc(d) {
+  $("dName").value = d.name; $("dSpeed").value = d.speed; $("dGlide").value = d.glide; $("dTurn").value = d.turn; $("dFade").value = d.fade;
+  $("dWeight").value = d.weightG || 175;
+  $("discText").textContent = `${d.name} · ${d.speed}/${d.glide}/${d.turn}/${d.fade}`;
+}
+function readDisc() {
+  const num = (id, lo, hi, def) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : def; };
+  return { name: $("dName").value.trim() || "Disc", speed: num("dSpeed", 1, 15, 9), glide: num("dGlide", 1, 7, 5), turn: num("dTurn", -5, 2, 0),
+           fade: num("dFade", 0, 6, 2), weightG: num("dWeight", 120, 200, 175) };
+}
+function discChanged() { settings.disc = readDisc(); saveSettings(); fillDisc(settings.disc); }
+["dSpeed", "dGlide", "dTurn", "dFade", "dName", "dWeight"].forEach(id => $(id).onchange = discChanged);
+$("bagSel").onchange = () => {
+  const v = $("bagSel").value;
+  if (v === "new") { fillDisc({ name: "", speed: 9, glide: 5, turn: -1, fade: 2 }); $("dName").focus(); return; }
+  settings.disc = { ...bag[+v] }; saveSettings(); fillDisc(settings.disc);
+};
+$("bagSave").onclick = () => {
+  const d = readDisc(); const i = bag.findIndex(b => b.name.toLowerCase() === d.name.toLowerCase());
+  if (i >= 0) bag[i] = d; else bag.push(d);
+  saveJSON(BKEY, bag); settings.disc = d; saveSettings(); renderBag(); toast(`${d.name} saved to the bag.`, "good", 2500);
+};
+$("bagDel").onclick = () => {
+  const v = $("bagSel").value; if (v === "new" || bag.length <= 1) return;
+  if (!confirm(`Remove ${bag[+v].name} from the bag?`)) return;
+  bag.splice(+v, 1); saveJSON(BKEY, bag); settings.disc = { ...bag[0] }; saveSettings(); renderBag();
+};
+$("reflyBtn").onclick = () => {
+  const last = current || session[session.length - 1]; if (!last) { toast("No throw to re-fly yet."); return; }
+  discChanged();
+  if (settings.game && last.game) gameUndo(true);            // the game: this replaces that shot
+  const e = { ...last, key: `${last.key}-r${Date.now() % 100000}`, at: Date.now(), disc: currentDisc(),
+              cond: { windMph: settings.windMph, windFrom: settings.windFrom, heightFt: settings.heightFt } };
+  const fl = flightFor(e); e.res = { distFt: fl.distFt, lateralFt: fl.lateralFt, maxHFt: fl.maxHFt, timeS: fl.timeS };
+  if (settings.game) { delete e.frame; delete e.game; }
+  session.push(e); saveSession(); sendToTechDisc(e); play(e, true);
+};
+$("handSel").onchange = () => { settings.hand = $("handSel").value; saveSettings(); if (current) showNumbers(current); };
+$("numSel").value = settings.rebuilt ? "rebuilt" : "disc";
+$("numSel").onchange = () => { settings.rebuilt = $("numSel").value === "rebuilt"; saveSettings(); syncStream(); };
+$("windMph").onchange = () => { settings.windMph = Math.max(0, Math.min(40, parseFloat($("windMph").value) || 0)); saveSettings(); };
+$("windFrom").onchange = () => { settings.windFrom = +$("windFrom").value; saveSettings(); };
+$("relHeight").onchange = () => { settings.heightFt = Math.max(0, Math.min(10, parseFloat($("relHeight").value) || 4)); saveSettings(); };
+$("camSel").onchange = () => { settings.camera = $("camSel").value; saveSettings(); };
+$("speedSel").onchange = () => { settings.speedX = parseFloat($("speedSel").value) || 1; saveSettings(); };
+$("unitSel").onchange = () => { settings.units = $("unitSel").value; saveSettings(); buildMarkers(); renderSession(); renderGame(); if (current) { showNumbers(current); if (!animating) { showResult(current); onLanded(); } } };
+$("scaleSel").onchange = () => { settings.scale = parseFloat($("scaleSel").value) || 3; saveSettings(); applyScale(); };
+$("modeSel").onchange = () => setMode($("modeSel").value);
+$("setBtn").onclick = () => $("panel").classList.toggle("hidden");
+$("sessBtn").onclick = () => { settings.showSession = !settings.showSession; saveSettings(); $("session").classList.toggle("hidden", !settings.showSession); };
+$("replayBtn").onclick = () => { const e = current || session[session.length - 1]; if (e) play(e, false); };
+$("fsBtn").onclick = toggleFullscreen;
+$("connPill").onclick = () => { if (!connected && !looping) pickDisc(); };
+$("discPill").onclick = () => $("panel").classList.remove("hidden");
+$("discBtn").onclick = () => device ? disconnect() : pickDisc();
+$("testBtn").onclick = testThrow;
+$("recBtn").onclick = () => rec.on ? recStop() : recStart();
+$("recPill").onclick = () => $("panel").classList.remove("hidden");
+document.querySelectorAll("#labelBtns button").forEach(b => b.onclick = () => addMark(+b.dataset.mark));
+$("clearBtn").onclick = () => { if (session.length && confirm("Clear this session's throws from the list?")) { session = []; saveSession(); renderSession(); } };
+$("exportBtn").onclick = exportCsv;
+$("welcomeConnect").onclick = () => { $("welcome").classList.add("hidden"); pickDisc(); };
+$("welcomeSkip").onclick = () => $("welcome").classList.add("hidden");
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen?.(); else document.documentElement.requestFullscreen?.().catch(() => {});
+}
+document.addEventListener("fullscreenchange", () => setTimeout(resize, 100));
+document.addEventListener("keydown", ev => {
+  if (ev.target.closest("input, select, textarea")) return;
+  const k = ev.key.toLowerCase();
+  if (k === "f") toggleFullscreen();
+  else if (k === "r" || k === " ") { ev.preventDefault(); $("replayBtn").click(); }
+  else if (k === "c") { const o = ["follow", "tee", "top"]; settings.camera = o[(o.indexOf(settings.camera) + 1) % 3]; $("camSel").value = settings.camera; saveSettings(); toast("Camera: " + $("camSel").selectedOptions[0].text, "", 1500); }
+  else if (k === "m") { const o = ["ours", "split", "techdisc", "live"]; setMode(o[(o.indexOf(settings.mode) + 1) % 4]); }
+  else if (k === "p" && settings.mode === "live") $("lpPause").click();
+  else if (k === "g") setGame(!settings.game);
+  else if ((k === "arrowleft" || k === "arrowright") && settings.game && !round.holeDone) { ev.preventDefault(); setAim(round.aim + (k === "arrowleft" ? -2 : 2)); }
+  else if (k === "s") $("sessBtn").click();
+  else if (k === "escape") { $("panel").classList.add("hidden"); $("welcome").classList.add("hidden"); }
+});
+function exportCsv() {
+  const head = "time,test,style,disc,disc_speed,glide,turn,fade,speed_mph,spin_rpm,spin_dir,hyzer_deg,nose_deg,launch_deg,wobble_deg,wobble_note," +
+               "distance_ft,lateral_ft_left,max_height_ft,flight_s,wind_mph,wind_from,release_height_ft,techdisc_link," +
+               "numbers,spin_is_at_least,disc_said_speed_mph,disc_said_spin_rpm,disc_said_hyzer_deg,disc_said_nose_deg,disc_said_launch_deg";
+  const rows = session.map(e => [new Date(e.at).toISOString(), e.test ? "yes" : "", styleName(e.t), `"${e.disc.name}"`, e.disc.speed, e.disc.glide,
+    e.disc.turn, e.disc.fade, e.t.speed, e.t.spin, e.t.ccw ? "ccw" : "cw", e.t.hyzer, e.t.nose, e.t.launch, (+e.t.wobble).toFixed(2),
+    e.t.wobbleOld ? "converted from old firmware" : "", e.res.distFt.toFixed(1), e.res.lateralFt.toFixed(1), e.res.maxHFt.toFixed(1),
+    e.res.timeS.toFixed(2), e.cond.windMph, e.cond.windFrom, e.cond.heightFt, techdiscSimUrl(e.t, e.disc),
+    e.t.rebuilt ? "rebuilt" : "disc", e.t.spinAtLeast ? "yes" : "", ...(e.t.discSaid ? [e.t.discSaid.speed, e.t.discSaid.spin, e.t.discSaid.hyzer,
+    e.t.discSaid.nose, e.t.discSaid.launch].map(v => Number.isFinite(v) ? +v.toFixed(2) : "") : ["", "", "", "", ""])].join(","));
+  const blob = new Blob([[head, ...rows].join("\n") + "\n"], { type: "text/csv" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = `disc_sim_session_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.csv`;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+
+// ---------------------------------------------------------------- start
+$("handSel").value = settings.hand; $("windMph").value = settings.windMph; $("windFrom").value = settings.windFrom;
+$("relHeight").value = settings.heightFt; $("camSel").value = settings.camera; $("speedSel").value = String(settings.speedX);
+$("unitSel").value = settings.units; $("scaleSel").value = String(settings.scale);
+$("session").classList.toggle("hidden", !settings.showSession);
+if (!navigator.bluetooth) $("btNote").textContent = "This browser has no Bluetooth – use Chrome or Edge on Windows or Mac.";
+renderBag(); renderSession();
+init3D();
+setMode(settings.mode);
+setGame(!!settings.game);
+updateRecUi();
+renderLegend();
+window.discSim = { _throw: t => play(addThrow({ ccw: false, flags: 1, wobble: 1, ...t, key: `test-${Date.now()}` }, true), true),
+                   _round: () => round, live, analyzeCapture, livePacket, play, addThrow, testThrow, session: () => session, onSummary, parseSummary, onBtPacket, rec, recStop, addMark,
+                   _testStart: () => { Object.assign(rec, { on: true, mem: [], name: "test.bin", t0: Date.now(), recNo: 0, expect: null, chunk: null, chunkN: 0, throws: 0, lost: 0, samples: 0, bytes: 0, pendingCaps: [] }); rec.ringSeq.fill(-1); },
+                   _testLink: ch => { cmdChar = ch; hasBtStream = true; streamSent = null; } };   // for testing
+</script>
+</body>
+</html>
