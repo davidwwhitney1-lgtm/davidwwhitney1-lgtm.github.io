@@ -23,15 +23,18 @@
   html, body { margin: 0; background: var(--bg); color: var(--text);
     font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     -webkit-tap-highlight-color: transparent; }
-  body { padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
-  main { max-width: 720px; margin: 0 auto; display: grid; gap: 14px; }
+  body { padding: 0 0 calc(84px + env(safe-area-inset-bottom)); }
+  main { max-width: 720px; margin: 0 auto; display: grid; gap: 12px; padding: 12px 12px 0; }
 
-  header { display: flex; align-items: center; gap: 12px; }
-  header h1 { font-size: 20px; margin: 0; letter-spacing: .02em; flex: 1; }
+  /* slim header: name, battery, status, connect */
+  header.top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 10px;
+    padding: max(10px, env(safe-area-inset-top)) 14px 10px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  header.top h1 { font-size: 18px; margin: 0; letter-spacing: .02em; flex: 1; white-space: nowrap; }
+  #connectBtn { padding: 8px 14px; font-size: 14px; border-radius: 999px; flex: none; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px; }
   .dot.on { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
   .dot.busy { background: var(--warn); }
-  #status { font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62vw; }
+  #status { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38vw; }
 
   button { font: inherit; border: 0; border-radius: 12px; padding: 12px 16px; cursor: pointer;
     background: var(--panel2); color: var(--text); font-weight: 600; }
@@ -142,18 +145,36 @@
   .calRow .r { flex: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
   .calRow button { padding: 8px 12px; }
   /* tabs */
-  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 14px; padding: 5px; }
-  .tabs button { padding: 10px; background: transparent; color: var(--muted); }
-  .tabs button.on { background: var(--accent2); color: #fff; }
+  /* bottom tab bar, in thumb reach */
+  nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: repeat(4, 1fr);
+    padding: 6px 8px max(8px, env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); }
+  nav.tabs button { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 0 4px; font-size: 12px;
+    background: transparent; color: var(--muted); border-radius: 12px; }
+  nav.tabs button .ic { font-size: 21px; line-height: 1; filter: grayscale(1); opacity: .7; }
+  nav.tabs button.on, nav.tabs button.pressed { background: var(--panel2) !important; color: var(--text) !important; box-shadow: none; }
+  nav.tabs button.on .ic { filter: none; opacity: 1; }
+  /* folded cards */
+  details.fold > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; font-weight: 600; }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary::after { content: "▾"; color: var(--muted); transition: transform .15s; }
+  details.fold[open] > summary::after { transform: rotate(180deg); }
+  details.fold[open] > summary { border-radius: var(--radius) var(--radius) 0 0; border-bottom: 0; }
+  details.fold > section.card { border-radius: 0 0 var(--radius) var(--radius); }
+  /* last throw */
+  .four { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+  .four .tile { padding: 8px 6px; text-align: center; }
+  .four .tile .label { font-size: 10.5px; letter-spacing: .06em; }
+  .four .tile .v { font-size: 22px; }
+  .row.actions { margin-top: 12px; }
+  .row.actions > button { min-width: 0; }
+  .note.small { font-size: 12.5px; margin: 6px 0 0; }
   #simOpts { padding: 10px 14px; }
   #simOpts > summary { cursor: pointer; font-size: 14px; list-style-position: inside; }
   #simOpts > summary .label { display: inline; margin-right: 6px; }
   #simOpts[open] > summary { margin-bottom: 8px; }
   #simOpts > section.card { box-shadow: none; border: 1px solid rgba(127, 127, 127, 0.25); margin-top: 8px; }
-  #sim3d { display: block; width: 100%; height: 70vh; min-height: 420px; border: 0; border-radius: 14px; background: #0b0f14; }
-  .tabs .tab3d { display: flex; align-items: center; justify-content: center; padding: 10px; border-radius: 10px; font-weight: 700;
-    color: #fff; text-decoration: none; background: linear-gradient(135deg, #ff8a1f, #e25d1a); }
+  #sim3d { display: block; width: 100%; height: 70vh; min-height: 380px; border: 0; border-radius: 14px; background: #0b0f14; }
   .tab { display: grid; gap: 14px; }
   /* buttons feel pressed */
   button { transition: transform .08s, background-color .15s, color .15s, box-shadow .2s; }
@@ -204,29 +225,18 @@
 </style>
 </head>
 <body>
+<header class="top">
+  <h1>🥏 DiscTracker</h1>
+  <span id="batt" class="batt hidden"></span>
+  <span id="status"><span class="dot" id="dot"></span><span id="statusText">Not connected</span></span>
+  <button class="primary" id="connectBtn">Connect</button>
+</header>
 <main>
-  <header>
-    <h1>🥏 DiscTracker</h1>
-    <span id="batt" class="batt hidden"></span>
-    <span id="status"><span class="dot" id="dot"></span><span id="statusText">Not connected</span></span>
-  </header>
-
   <div class="card hidden" id="unsupported">
     <b>This browser can't use Bluetooth.</b>
     <p class="note">On <b>Android</b>, open this page in <b>Chrome</b>. On <b>iPhone</b>, Safari can't do it, so install the free
       <b>Bluefy</b> browser from the App Store and open this page there.</p>
   </div>
-
-  <div class="row">
-    <button class="primary" id="connectBtn">Connect to disc</button>
-  </div>
-
-  <nav class="tabs">
-    <button data-tab="throw" class="on">Throw data</button>
-    <button data-tab="sim">3D simulator</button>
-    <button data-tab="rec">Recordings</button>
-    <a class="tab3d" href="disc3d.html" title="Each throw in 3D: the throw rebuilt past the sensor's limits, then its flight to the net or the ground">🥏 3D view</a>
-  </nav>
 
   <div class="banner hidden" id="banner"></div>
 
@@ -239,109 +249,22 @@
     <div class="six">
       <div class="tile main"><div class="label">Speed</div><div class="v"><span id="rSpeed">–</span><small> mph</small></div></div>
       <div class="tile main"><div class="label">Spin</div><div class="v"><span id="rSpin">–</span><small> rpm</small></div></div>
+    </div>
+    <div class="four">
       <div class="tile"><div class="label">Hyzer</div><div class="v"><span id="rHyzer">–</span><small>°</small></div></div>
       <div class="tile"><div class="label">Nose</div><div class="v"><span id="rNose">–</span><small>°</small></div></div>
       <div class="tile"><div class="label">Launch</div><div class="v"><span id="rLaunch">–</span><small>°</small></div></div>
       <div class="tile"><div class="label">Wobble</div><div class="v"><span id="rWobble">–</span><small>°</small></div></div>
     </div>
-    <button id="copyBtn" class="wide" style="margin-top:12px" disabled>Copy numbers for the simulator</button>
-    <button id="tdBtn" class="primary wide" style="margin-top:8px" disabled>Open this throw in TechDisc's simulator ↗</button>
-    <p class="note" id="tdNote" style="margin:6px 0 0">Uses the disc set up in the Simulate tab. TechDisc has no wobble setting, so wobble isn't sent.</p>
     <div class="chips" id="rChips"></div>
-    <p class="note" id="resultEmpty">Hold the disc still for a moment, then throw with snap. Results are ready ~0.3 s
-      after release (needs ~¼ s of clean flight – stand 3–5 m from a net). Out of range? It reconnects and the
-      result arrives then.</p>
+    <p class="note" id="resultEmpty">Hold the disc still for a moment, then throw. The numbers show up about a second after
+      release. If the disc is out of range, they arrive when it reconnects.</p>
+    <div class="row actions">
+      <button id="copyBtn" disabled>Copy numbers</button>
+      <button id="tdBtn" class="primary" disabled>TechDisc sim ↗</button>
+    </div>
+    <p class="note small" id="tdNote">TechDisc uses the disc chosen in the 3D tab (it has no wobble setting).</p>
     <p class="note" id="captureInfo" style="margin-bottom:0"></p>
-  </section>
-
-  <section class="card">
-    <div class="result-head">
-      <div class="label">Throw detection</div>
-      <div class="note" id="sensNote">–</div>
-    </div>
-    <input type="range" id="sensBar" min="1" max="5" step="1" value="5" disabled>
-    <div class="sensScale"><span>Hand tests</span><span>Real throws</span></div>
-    <p class="note" id="sensDesc" style="margin-bottom:0"></p>
-  </section>
-
-  <section class="card" id="findCard">
-    <div class="result-head">
-      <div class="label">Find my disc</div>
-      <div class="note" id="findState">off</div>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <button class="primary" id="findBtn" disabled>Start finding</button>
-      <button id="ledBtn" disabled>Flash LED</button>
-      <button id="beepBtn">Beeps: off</button>
-    </div>
-
-    <div class="meter" id="meter">
-      <div class="meterFill" id="meterFill"></div>
-      <div class="meterPeak hidden" id="meterPeak"></div>
-    </div>
-    <div class="findRow">
-      <div><span class="findWord" id="findWord">–</span> <span class="trend" id="trend"></span></div>
-      <div class="note" id="rssiText"></div>
-    </div>
-    <div class="findDist" id="findDist">Distance: –</div>
-
-    <div class="dirBox">
-      <svg id="dirArrow" class="dirArrow hidden" viewBox="-50 -50 100 100" aria-hidden="true">
-        <circle r="46" fill="none" stroke="var(--line)" stroke-width="3"/>
-        <path id="arrowPath" d="M0,-38 L16,6 L5,2 L5,30 L-5,30 L-5,2 L-16,6 Z" fill="var(--accent)"/>
-      </svg>
-      <div class="dirText">
-        <div class="label">Direction</div>
-        <div id="dirMsg" class="dirMsg">Start finding, then tap <b>Find direction</b>.</div>
-        <button id="dirBtn" disabled style="margin-top:8px">Find direction</button>
-      </div>
-    </div>
-
-    <details class="calib">
-      <summary>Calibrate distance (do once, in an open area)</summary>
-      <ol class="steps">
-        <li>Lay the disc flat on the ground in an open spot.</li>
-        <li>Tap <b>Start finding</b> above.</li>
-        <li>For each distance: stand that far away (one long stride ≈ 1 m), hold the phone at chest height
-          facing the disc, tap <b>Record</b> and stay still for 5 seconds.</li>
-        <li>Record at least 3 distances, then tap <b>Save calibration</b>.</li>
-      </ol>
-      <div id="calRows"></div>
-      <div class="row" style="margin-top:10px">
-        <button id="calSave" disabled>Save calibration</button>
-        <button id="calReset">Reset</button>
-      </div>
-      <p class="note" id="calFit" style="margin-bottom:0"></p>
-    </details>
-  </section>
-
-  <section class="card">
-    <div class="hero">
-      <div>
-        <div class="label">Spin</div>
-        <div><span class="big" id="spin">–</span><span class="unit">rpm</span></div>
-        <span class="pill" id="state">waiting</span>
-      </div>
-      <div>
-        <div class="stage" id="stage" title="Disc tilt (accurate while still)">
-          <div class="scene"><div class="disc" id="disc">
-            <div class="face top" id="discTop"><span class="usb">USB</span></div><div class="face bottom"></div>
-          </div></div>
-        </div>
-        <div class="stage-label" id="stageLabel">tilt</div>
-        <button id="frontBtn" class="tiny" disabled>Set front</button>
-      </div>
-    </div>
-    <div class="tiles" style="margin-top:14px">
-      <div class="tile"><div class="label">G-force</div><div class="v" id="g">–<small> g</small></div></div>
-      <div class="tile"><div class="label">Rotation</div><div class="v" id="rot">–<small> °/s</small></div></div>
-      <div class="tile"><div class="label">Roll</div><div class="v" id="roll">–<small>°</small></div></div>
-      <div class="tile"><div class="label">Pitch</div><div class="v" id="pitch">–<small>°</small></div></div>
-    </div>
-    <div style="margin-top:14px">
-      <canvas id="chart" width="700" height="110"></canvas>
-      <div class="legend"><span><i style="background:var(--accent)"></i>spin (rpm)</span><span><i style="background:var(--accent2)"></i>g-force</span><span>last 10 s</span></div>
-    </div>
   </section>
 
   <section class="card">
@@ -356,150 +279,6 @@
       <tbody id="histBody"></tbody>
     </table>
   </section>
-
-  <section class="card">
-    <div class="result-head">
-      <div class="label">Calibrate &amp; test</div>
-      <div class="note" id="calSaved"></div>
-    </div>
-    <p class="note"><b>Best:</b> the step-by-step <a href="calibrate.html">calibration page</a> checks the calibration first,
-      then measures the gyro offset and the spin radius properly (Chrome on a computer, or Bluefy).</p>
-    <ol class="steps">
-      <li>Mount the board in the <b>center</b> of the disc, under the flight plate, lying flat.</li>
-      <li>Lay the disc <b>flat, label facing UP</b>, on a table or the floor (unplug the USB cable first).</li>
-      <li>Tap <b>Calibrate</b> and don't touch the disc for 3 seconds.</li>
-    </ol>
-    <button class="primary wide" id="calBtn" disabled>Calibrate</button>
-    <div class="calmsg" id="calMsg">Connect to the disc first.</div>
-    <p class="note">Do this once after mounting (and again if the board moves). It's saved on
-      the disc, so turning it off doesn't lose it.</p>
-    <div class="spinCal">
-      <div class="result-head"><div class="label">Spin above 382 rpm</div><div class="note" id="spinCalState">–</div></div>
-      <p class="note">The gyro tops out at 382 rpm. Above that the disc estimates spin two ways: the drag "wave" in
-        flight, and centripetal force – which needs to know how far the sensor sits from the spin axis.
-        It <b>learns that by itself from gentle spinning throws (under ~380 rpm)</b>, or calibrate it here:</p>
-      <ol class="steps">
-        <li>Lay the disc <b>flat, label up</b>, on a smooth table (not a turntable: that measures the turntable's axis).</li>
-        <li>Tap <b>Calibrate spin</b>, then flick it into a spin of <b>120–320 rpm</b> (2–5 turns a second) and let it spin for about 10 seconds.
-        (The <a href="calibrate.html">calibration page</a> does this more accurately.)</li>
-      </ol>
-      <button id="spinCalBtn" class="wide" disabled>Calibrate spin</button>
-    </div>
-  </section>
-
-  <section class="card" id="recCard">
-    <div class="result-head">
-      <div class="label">Full sensor recording</div>
-      <div class="note" id="logState">–</div>
-    </div>
-    <p class="note" style="margin-top:6px">Saves <b>every</b> gyro and accelerometer reading (416 a second) on the disc
-      itself, so it keeps recording while the disc is out of range. It <b>stops by itself when the memory is full</b>
-      and won't record again until you move the data off and clear it.</p>
-    <div class="meter" style="height:16px;margin-top:10px"><div class="meterFill" id="logFill" style="background:var(--accent2)"></div></div>
-    <p class="note" id="logInfo" style="margin:8px 0 12px">Connect to see what's recorded.</p>
-    <button class="primary wide" id="sessBtn" disabled>● Record all sensor data</button>
-    <button class="wide" id="goRecBtn" style="margin-top:8px">⬇ Download &amp; view recordings →</button>
-
-    <div class="label" style="margin-top:16px">What test is next?</div>
-    <p class="note" style="margin:4px 0 8px">Tap before each test – it's written into the recording, so every test is labeled
-      when you look at the data later.</p>
-    <div class="row testRow">
-      <button class="testBtn" data-mark="1">Drop</button>
-      <button class="testBtn" data-mark="2">Throw into net</button>
-      <button class="testBtn" data-mark="3">Real throw</button>
-      <button class="testBtn" data-mark="4">Hand spin / flick</button>
-      <button class="testBtn" data-mark="5">Other</button>
-    </div>
-    <p class="note" id="markMsg" style="margin:6px 0 0"></p>
-
-    <details style="margin-top:14px">
-      <summary>Move the data off with a computer instead</summary>
-      <p class="note">Easiest: the <b>Recordings</b> tab downloads it straight to this phone over Bluetooth. Or with a computer:</p>
-      <ol class="steps">
-        <li>Stop recording (or let it fill up). Plug the disc into the computer with a data cable.</li>
-        <li>Close the Arduino Serial Monitor. In the <code>Disc_tracker\analysis</code> folder run:<br>
-          <code>py disclab.py export --clear</code></li>
-        <li>It saves everything to <code>analysis\data\&lt;date&gt;</code> (CSV files for Excel) and only then erases the disc,
-          so it's ready to record again.</li>
-      </ol>
-      <p class="note">Disc light: <b>green</b> blink every 4 s = on · <b>blue</b> every second = recording ·
-        <b>red</b> every 2 s = memory full.</p>
-      <button id="logClearBtn" class="wide" disabled>Erase recording without saving</button>
-    </details>
-  </section>
-
-  <section class="card">
-    <div class="result-head">
-      <div class="label">Power</div>
-      <div class="note" id="powerMode">–</div>
-    </div>
-    <div class="battLine" id="battLine">Battery: –</div>
-    <div class="row" style="margin-top:10px">
-      <button id="standbyBtn" disabled>Standby</button>
-      <button id="wakeBtn" disabled>Wake up</button>
-      <button id="offBtn" disabled>Turn off</button>
-    </div>
-    <ul class="steps" style="margin-bottom:0">
-      <li><b>Standby</b> – saves most of the battery. Tap <b>Wake up</b>, or just pick up the disc.
-        Happens on its own after 5 min without motion.</li>
-      <li><b>Turn off</b> – saves the most. While off the disc can't hear Bluetooth, so turn it back on with a
-        <b>firm flick or shake</b>. It also turns itself off after 4 h in standby with no phone, or when the
-        battery is low. (Never while plugged into USB – it uses standby then.)</li>
-    </ul>
-  </section>
-
-  <div class="row">
-    <button id="clearBoard" disabled>Erase throws stored on disc</button>
-  </div>
-
-  <p class="note"><b>On a computer?</b> <a href="sim.html">Open the big-screen simulator</a> – it connects to the disc
-    and flies every throw automatically. Or watch a <a href="disc3d.html">live 3D copy of the disc</a> move and spin.</p>
-  <p class="note">Version 2026-10-22. Roll/pitch are only accurate while the disc is still.
-    Spin above ~382 rpm exceeds the gyro's range; the board then estimates it from the accelerometer.</p>
-  </div>
-
-  <div id="tab-rec" class="tab hidden">
-    <section class="card">
-      <div class="result-head">
-        <div class="label">Download from disc</div>
-        <div class="note" id="dlDiscInfo">–</div>
-      </div>
-      <p class="note" style="margin-top:6px">Copies everything the disc recorded onto this phone over Bluetooth, then checks
-        every byte. Keep the phone near the disc. A full 6½-minute recording takes about 1–2 minutes.
-        If it disconnects, it carries on where it stopped.</p>
-      <button class="primary wide" id="dlBtn" disabled>⬇ Download from disc</button>
-      <div class="meter" style="height:16px;margin-top:10px"><div class="meterFill" id="dlFill" style="background:var(--accent2)"></div></div>
-      <p class="note" id="dlMsg" style="margin:8px 0 0">Connect to the disc first.</p>
-      <button class="wide" id="dlRestartBtn" style="margin-top:12px" disabled>Erase disc &amp; start a new recording</button>
-      <p class="note" style="margin:6px 0 0">Only unlocks after a download has been checked and saved here, so nothing can be lost.</p>
-    </section>
-
-    <section class="card">
-      <div class="result-head">
-        <div class="label">Saved on this phone</div>
-        <div class="note" id="recCount"></div>
-      </div>
-      <div class="row recList" id="recList" style="margin-top:10px"></div>
-      <div id="recView" class="hidden">
-        <p class="note" id="recSummary" style="margin:12px 0 6px"></p>
-        <div class="row zoomRow">
-          <button id="zoomAll">All</button><button id="zoomIn">＋</button><button id="zoomOut">－</button>
-          <button id="panL">◀</button><button id="panR">▶</button>
-        </div>
-        <canvas id="recChart" class="recChart"></canvas>
-        <p class="note" style="margin:4px 0 10px">Top: total force (g). Bottom: spin from the gyro (rpm; flat at 382 = gyro maxed out).
-          Coloured lines = test markers, shaded = captures (green counted, grey rejected). Tap a row below to zoom in.</p>
-        <div class="tableWrap"><table id="capTable"></table></div>
-        <div class="row" style="margin-top:12px">
-          <button class="primary" id="csvAllBtn">Excel file – every reading</button>
-          <button id="csvThrowBtn">Excel file – throw results</button>
-          <button id="csvRawBtn">Excel file – raw I²C counts</button>
-          <button id="binBtn">Raw file (for disclab)</button>
-          <button id="recDelBtn">Delete</button>
-        </div>
-      </div>
-      <p class="note" id="recEmpty">Nothing saved yet.</p>
-    </section>
   </div>
 
   <div id="tab-sim" class="tab hidden">
@@ -585,7 +364,255 @@
     </section>
     </div>
   </div>
+
+  <div id="tab-disc" class="tab hidden">
+  <section class="card">
+    <div class="hero">
+      <div>
+        <div class="label">Spin</div>
+        <div><span class="big" id="spin">–</span><span class="unit">rpm</span></div>
+        <span class="pill" id="state">waiting</span>
+      </div>
+      <div>
+        <div class="stage" id="stage" title="Disc tilt (accurate while still)">
+          <div class="scene"><div class="disc" id="disc">
+            <div class="face top" id="discTop"><span class="usb">USB</span></div><div class="face bottom"></div>
+          </div></div>
+        </div>
+        <div class="stage-label" id="stageLabel">tilt</div>
+        <button id="frontBtn" class="tiny" disabled>Set front</button>
+      </div>
+    </div>
+    <div class="tiles" style="margin-top:14px">
+      <div class="tile"><div class="label">G-force</div><div class="v" id="g">–<small> g</small></div></div>
+      <div class="tile"><div class="label">Rotation</div><div class="v" id="rot">–<small> °/s</small></div></div>
+      <div class="tile"><div class="label">Roll</div><div class="v" id="roll">–<small>°</small></div></div>
+      <div class="tile"><div class="label">Pitch</div><div class="v" id="pitch">–<small>°</small></div></div>
+    </div>
+    <div style="margin-top:14px">
+      <canvas id="chart" width="700" height="110"></canvas>
+      <div class="legend"><span><i style="background:var(--accent)"></i>spin (rpm)</span><span><i style="background:var(--accent2)"></i>g-force</span><span>last 10 s</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="result-head">
+      <div class="label">Throw detection</div>
+      <div class="note" id="sensNote">–</div>
+    </div>
+    <input type="range" id="sensBar" min="1" max="5" step="1" value="5" disabled>
+    <div class="sensScale"><span>Hand tests</span><span>Real throws</span></div>
+    <p class="note" id="sensDesc" style="margin-bottom:0"></p>
+  </section>
+
+  <section class="card">
+    <div class="result-head">
+      <div class="label">Power</div>
+      <div class="note" id="powerMode">–</div>
+    </div>
+    <div class="battLine" id="battLine">Battery: –</div>
+    <div class="row" style="margin-top:10px">
+      <button id="standbyBtn" disabled>Standby</button>
+      <button id="wakeBtn" disabled>Wake up</button>
+      <button id="offBtn" disabled>Turn off</button>
+    </div>
+    <ul class="steps" style="margin-bottom:0">
+      <li><b>Standby</b> – saves most of the battery. Tap <b>Wake up</b>, or just pick up the disc.
+        Happens on its own after 5 min without motion.</li>
+      <li><b>Turn off</b> – saves the most. While off the disc can't hear Bluetooth, so turn it back on with a
+        <b>firm flick or shake</b>. It also turns itself off after 4 h in standby with no phone, or when the
+        battery is low. (Never while plugged into USB – it uses standby then.)</li>
+    </ul>
+  </section>
+
+  <details class="fold" id="findFold">
+    <summary>Find my disc</summary>
+  <section class="card" id="findCard">
+    <div class="result-head">
+      <div class="label">Find my disc</div>
+      <div class="note" id="findState">off</div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="findBtn" disabled>Start finding</button>
+      <button id="ledBtn" disabled>Flash LED</button>
+      <button id="beepBtn">Beeps: off</button>
+    </div>
+
+    <div class="meter" id="meter">
+      <div class="meterFill" id="meterFill"></div>
+      <div class="meterPeak hidden" id="meterPeak"></div>
+    </div>
+    <div class="findRow">
+      <div><span class="findWord" id="findWord">–</span> <span class="trend" id="trend"></span></div>
+      <div class="note" id="rssiText"></div>
+    </div>
+    <div class="findDist" id="findDist">Distance: –</div>
+
+    <div class="dirBox">
+      <svg id="dirArrow" class="dirArrow hidden" viewBox="-50 -50 100 100" aria-hidden="true">
+        <circle r="46" fill="none" stroke="var(--line)" stroke-width="3"/>
+        <path id="arrowPath" d="M0,-38 L16,6 L5,2 L5,30 L-5,30 L-5,2 L-16,6 Z" fill="var(--accent)"/>
+      </svg>
+      <div class="dirText">
+        <div class="label">Direction</div>
+        <div id="dirMsg" class="dirMsg">Start finding, then tap <b>Find direction</b>.</div>
+        <button id="dirBtn" disabled style="margin-top:8px">Find direction</button>
+      </div>
+    </div>
+
+    <details class="calib">
+      <summary>Calibrate distance (do once, in an open area)</summary>
+      <ol class="steps">
+        <li>Lay the disc flat on the ground in an open spot.</li>
+        <li>Tap <b>Start finding</b> above.</li>
+        <li>For each distance: stand that far away (one long stride ≈ 1 m), hold the phone at chest height
+          facing the disc, tap <b>Record</b> and stay still for 5 seconds.</li>
+        <li>Record at least 3 distances, then tap <b>Save calibration</b>.</li>
+      </ol>
+      <div id="calRows"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="calSave" disabled>Save calibration</button>
+        <button id="calReset">Reset</button>
+      </div>
+      <p class="note" id="calFit" style="margin-bottom:0"></p>
+    </details>
+  </section>
+  </details>
+
+  <details class="fold" id="calFold">
+    <summary>Calibrate &amp; test</summary>
+  <section class="card">
+    <div class="result-head">
+      <div class="label">Placement</div>
+      <div class="note" id="calSaved"></div>
+    </div>
+    <p class="note"><b>Best:</b> the step-by-step <a href="calibrate.html">calibration page</a> checks the calibration first,
+      then measures the gyro offset and the spin radius properly (Chrome on a computer, or Bluefy).</p>
+    <ol class="steps">
+      <li>Mount the board in the <b>center</b> of the disc, under the flight plate, lying flat.</li>
+      <li>Lay the disc <b>flat, label facing UP</b>, on a table or the floor (unplug the USB cable first).</li>
+      <li>Tap <b>Calibrate</b> and don't touch the disc for 3 seconds.</li>
+    </ol>
+    <button class="primary wide" id="calBtn" disabled>Calibrate</button>
+    <div class="calmsg" id="calMsg">Connect to the disc first.</div>
+    <p class="note">Do this once after mounting (and again if the board moves). It's saved on
+      the disc, so turning it off doesn't lose it.</p>
+    <div class="spinCal">
+      <div class="result-head"><div class="label">Spin above 382 rpm</div><div class="note" id="spinCalState">–</div></div>
+      <p class="note">The gyro tops out at 382 rpm. Above that the disc estimates spin two ways: the drag "wave" in
+        flight, and centripetal force – which needs to know how far the sensor sits from the spin axis.
+        It <b>learns that by itself from gentle spinning throws (under ~380 rpm)</b>, or calibrate it here:</p>
+      <ol class="steps">
+        <li>Lay the disc <b>flat, label up</b>, on a smooth table (not a turntable: that measures the turntable's axis).</li>
+        <li>Tap <b>Calibrate spin</b>, then flick it into a spin of <b>120–320 rpm</b> (2–5 turns a second) and let it spin for about 10 seconds.
+        (The <a href="calibrate.html">calibration page</a> does this more accurately.)</li>
+      </ol>
+      <button id="spinCalBtn" class="wide" disabled>Calibrate spin</button>
+    </div>
+  </section>
+  </details>
+
+  <div class="row">
+    <button id="clearBoard" disabled>Erase throws stored on disc</button>
+  </div>
+  </div>
+
+  <div id="tab-rec" class="tab hidden">
+  <section class="card" id="recCard">
+    <div class="result-head">
+      <div class="label">Full sensor recording</div>
+      <div class="note" id="logState">–</div>
+    </div>
+    <p class="note" style="margin-top:6px">For test sessions: saves <b>every</b> sensor reading (416 a second) on the disc,
+      about 6 minutes' worth. Throws are saved on the disc either way.</p>
+    <div class="meter" style="height:16px;margin-top:10px"><div class="meterFill" id="logFill" style="background:var(--accent2)"></div></div>
+    <p class="note" id="logInfo" style="margin:8px 0 12px">Connect to see what's recorded.</p>
+    <button class="primary wide" id="sessBtn" disabled>● Record all sensor data</button>
+    <button class="wide" id="goRecBtn" style="margin-top:8px">⬇ Download &amp; view recordings ↓</button>
+
+    <div class="label" style="margin-top:16px">What test is next?</div>
+    <p class="note" style="margin:4px 0 8px">Tap before each test – it's written into the recording, so every test is labeled
+      when you look at the data later.</p>
+    <div class="row testRow">
+      <button class="testBtn" data-mark="1">Drop</button>
+      <button class="testBtn" data-mark="2">Throw into net</button>
+      <button class="testBtn" data-mark="3">Real throw</button>
+      <button class="testBtn" data-mark="4">Hand spin / flick</button>
+      <button class="testBtn" data-mark="5">Other</button>
+    </div>
+    <p class="note" id="markMsg" style="margin:6px 0 0"></p>
+
+    <details style="margin-top:14px">
+      <summary>Move the data off with a computer instead</summary>
+      <p class="note">Easiest: <b>Download from disc</b> below copies it straight to this phone over Bluetooth. Or with a computer:</p>
+      <ol class="steps">
+        <li>Stop recording (or let it fill up). Plug the disc into the computer with a data cable.</li>
+        <li>Close the Arduino Serial Monitor. In the <code>Disc_tracker\analysis</code> folder run:<br>
+          <code>py disclab.py export --clear</code></li>
+        <li>It saves everything to <code>analysis\data\&lt;date&gt;</code> (CSV files for Excel) and only then erases the disc,
+          so it's ready to record again.</li>
+      </ol>
+      <p class="note">Disc light: <b>green</b> blink every 4 s = on · <b>blue</b> every second = recording ·
+        <b>red</b> every 2 s = memory full.</p>
+      <button id="logClearBtn" class="wide" disabled>Erase recording without saving</button>
+    </details>
+  </section>
+
+    <section class="card">
+      <div class="result-head">
+        <div class="label">Download from disc</div>
+        <div class="note" id="dlDiscInfo">–</div>
+      </div>
+      <p class="note" style="margin-top:6px">Copies everything the disc recorded onto this phone over Bluetooth, then checks
+        every byte. Keep the phone near the disc. A full 6½-minute recording takes about 1–2 minutes.
+        If it disconnects, it carries on where it stopped.</p>
+      <button class="primary wide" id="dlBtn" disabled>⬇ Download from disc</button>
+      <div class="meter" style="height:16px;margin-top:10px"><div class="meterFill" id="dlFill" style="background:var(--accent2)"></div></div>
+      <p class="note" id="dlMsg" style="margin:8px 0 0">Connect to the disc first.</p>
+      <button class="wide" id="dlRestartBtn" style="margin-top:12px" disabled>Erase disc &amp; start a new recording</button>
+      <p class="note" style="margin:6px 0 0">Only unlocks after a download has been checked and saved here, so nothing can be lost.</p>
+    </section>
+
+    <section class="card">
+      <div class="result-head">
+        <div class="label">Saved on this phone</div>
+        <div class="note" id="recCount"></div>
+      </div>
+      <div class="row recList" id="recList" style="margin-top:10px"></div>
+      <div id="recView" class="hidden">
+        <p class="note" id="recSummary" style="margin:12px 0 6px"></p>
+        <div class="row zoomRow">
+          <button id="zoomAll">All</button><button id="zoomIn">＋</button><button id="zoomOut">－</button>
+          <button id="panL">◀</button><button id="panR">▶</button>
+        </div>
+        <canvas id="recChart" class="recChart"></canvas>
+        <p class="note" style="margin:4px 0 10px">Top: total force (g). Bottom: spin from the gyro (rpm; flat at 382 = gyro maxed out).
+          Coloured lines = test markers, shaded = captures (green counted, grey rejected). Tap a row below to zoom in.</p>
+        <div class="tableWrap"><table id="capTable"></table></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="csvAllBtn">Excel file – every reading</button>
+          <button id="csvThrowBtn">Excel file – throw results</button>
+          <button id="csvRawBtn">Excel file – raw I²C counts</button>
+          <button id="binBtn">Raw file (for disclab)</button>
+          <button id="recDelBtn">Delete</button>
+        </div>
+      </div>
+      <p class="note" id="recEmpty">Nothing saved yet.</p>
+    </section>
+
+  <p class="note"><b>On a computer?</b> <a href="sim.html">Open the big-screen simulator</a> – it connects to the disc
+    and flies every throw automatically. Or open the <a href="disc3d.html">3D page</a> on its own.</p>
+  <p class="note">Version 2026-10-29. Roll/pitch are only accurate while the disc is still.
+    Spin above ~382 rpm exceeds the gyro's range; the board then estimates it from the accelerometer.</p>
+  </div>
 </main>
+
+<nav class="tabs" id="navTabs">
+  <button data-tab="throw" class="on"><span class="ic">🎯</span>Throw</button>
+  <button data-tab="sim"><span class="ic">🥏</span>3D</button>
+  <button data-tab="disc"><span class="ic">📡</span>Disc</button>
+  <button data-tab="rec"><span class="ic">💾</span>Data</button>
+</nav>
 
 <script src="flight.js?v=2026-10-21b"></script>
 <script>
@@ -1031,7 +1058,7 @@ async function connectLoop() {
     }
   }
   reconnecting = false;
-  if (userDisconnect) { $("connectBtn").textContent = "Connect to disc"; setStatus("Not connected"); }
+  if (userDisconnect) { $("connectBtn").textContent = "Connect"; setStatus("Not connected"); }
 }
 
 async function setupGatt() {
@@ -1131,7 +1158,7 @@ function onDisconnected() {
   if (finding) $("findState").textContent = "out of range – reconnecting…";
   if (calPending) { clearTimeout(calPending); calPending = null; setCalMsg("Disconnected during calibration – try again.", "bad"); }
   $("stage").classList.add("unsure");
-  if (userDisconnect) { $("connectBtn").textContent = "Connect to disc"; setStatus("Not connected"); return; }
+  if (userDisconnect) { $("connectBtn").textContent = "Connect"; setStatus("Not connected"); return; }
   if (discMode === MODE.OFF) {
     $("powerMode").textContent = "Off – flick the disc to turn it on";
     showBanner("The disc is off. Give it a firm flick or shake to turn it on – this page reconnects by itself.", "");
@@ -1633,6 +1660,7 @@ function showTab(name) {
   if (name === "sim") { renderSimSources(); if (lastFlight) drawFlight(lastFlight.timeS); sim3dOpen(); }
   sim3dStream();
   if (name === "rec") requestAnimationFrame(drawRec);
+  window.scrollTo(0, 0);
 }
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
@@ -1653,7 +1681,8 @@ function sim3dOpen() {
 }
 function sizeSim3d() {
   const f = sim3dFrame(); if (!f || $("tab-sim").classList.contains("hidden")) return;
-  f.style.height = Math.max(420, Math.round(innerHeight - f.getBoundingClientRect().top - 12 + scrollY)) + "px";
+  const nav = $("navTabs") ? $("navTabs").offsetHeight : 0;
+  f.style.height = Math.max(380, Math.round(innerHeight - f.getBoundingClientRect().top - nav - 12 + scrollY)) + "px";
 }
 addEventListener("resize", sizeSim3d);
 function sim3dCfg() {
@@ -1813,7 +1842,7 @@ $("dlRestartBtn").onclick = () => {
   sendCmd("logclear");
   updateDlCard();
 };
-$("goRecBtn").onclick = () => { showTab("rec"); window.scrollTo(0, 0); };
+$("goRecBtn").onclick = () => $("dlBtn").scrollIntoView({ behavior: "smooth", block: "center" });
 
 // -- parse the disc's binary log (same layout as flash_log.h LogHeader) --
 const END_NAMES = { 1: "impact", 2: "flight window full", 3: "3 s limit" };
@@ -2136,7 +2165,7 @@ $("connectBtn").onclick = () => {
     userDisconnect = true;
     showBanner("", "");
     try { device.gatt.disconnect(); } catch {}
-    $("connectBtn").textContent = "Connect to disc"; setStatus("Not connected");
+    $("connectBtn").textContent = "Connect"; setStatus("Not connected");
     return;
   }
   connect();
