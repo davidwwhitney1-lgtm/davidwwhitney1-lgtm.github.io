@@ -659,7 +659,8 @@ function parseSummaryRaw(dv) {
       speed: dv.getUint16(6, true) / 10, spin: dv.getUint16(8, true),
       hyzer: dv.getInt16(10, true) / 10, nose: dv.getInt16(12, true) / 10,
       launch: dv.getInt16(14, true) / 10, wobble: dv.getUint16(16, true) / 10,
-      peak: dv.getUint8(18) / 4, ccw: !!(dv.getUint8(1) & 128), spinSrc: dv.getUint8(19) & 0x7f,
+      peak: dv.getUint8(18) / 4, ccw: !!(dv.getUint8(1) & 128), spinSrc: dv.getUint8(19) & 0x3f,
+      lowConf: !!(dv.getUint8(19) & 0x40),     // v5: a hard pull kept although a check failed
       wobbleOld: !(dv.getUint8(19) & 0x80),   // older firmware: rate-vector angle (~2x), converted below
     };
   }
@@ -775,6 +776,7 @@ function showResult(t, isNew) {
   if (SRC[t.spinSrc]) chips.unshift(SRC[t.spinSrc]);
   if (t.ccw !== undefined) chips.unshift(t.ccw ? "Spin: counter-clockwise (RH forehand / LH backhand)" : "Spin: clockwise (RH backhand / LH forehand)");
   if (t.sens && t.sens < 5) chips.unshift(`Test reading (sensitivity ${t.sens}) – not a full throw measurement`);
+  if (t.lowConf) chips.unshift("Low confidence – a hard pull the disc nearly rejected; check the 3D replay");
   $("rChips").innerHTML = chips.map(c => `<span class="chip">${c}</span>`).join("");
   $("copyBtn").disabled = false;
   $("tdBtn").disabled = false;
@@ -1635,15 +1637,16 @@ function showTab(name) {
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // ---- the 3D simulator tab: disc3d.html inside a frame, fed from this page's connection ----
-// The disc sends every reading only while the tab is open ("bton"); its throws are then not saved to the disc's
-// own memory, so the stream stops ("btoff") as soon as another tab is chosen.
+// The disc sends every reading only while the tab is open ("bton"); the stream stops ("btoff") as soon as another tab
+// is chosen. Each throw is also saved on the disc: the 3D page confirms the ones it gets and asks for any it missed
+// out of range ("unsent").
 let sim3dReady = false, sim3dOn = false;
 const sim3dFrame = () => $("sim3d");
 function sim3dPost(m, transfer) { const f = sim3dFrame(); if (f && sim3dReady) f.contentWindow.postMessage(m, location.origin, transfer || []); }
 function sim3dOpen() {
   if (!sim3dFrame()) {
     const f = document.createElement("iframe");
-    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-10-27d"; f.allow = "fullscreen";
+    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-10-29"; f.allow = "fullscreen";
     $("sim3dWrap").appendChild(f);
   }
   sizeSim3d();
@@ -1662,7 +1665,7 @@ function sim3dCfg() {
 }
 function sim3dStream() {
   const want = !!cmdChar && !$("tab-sim").classList.contains("hidden");
-  if (want !== sim3dOn && cmdChar) { sim3dOn = want; sendCmd(want ? "bton" : "btoff"); }
+  if (want !== sim3dOn && cmdChar) { sim3dOn = want; sendCmd(want ? "bton" : "btoff").then(() => { if (want) sendCmd("unsent"); }); }
   if (!cmdChar) sim3dOn = false;
   sim3dPost({ dt: "conn", state: cmdChar ? "on" : device ? "lost" : "off" });
 }
@@ -1701,19 +1704,20 @@ function onLogInfo(dv) {
   lastLogDv = dv;
   const fl = dv.getUint8(1), rec = dv.getUint16(2, true), used = dv.getUint16(4, true), cap = dv.getUint16(6, true) || 2048;
   const secs = dv.getUint16(8, true), mark = dv.byteLength > 10 ? dv.getUint8(10) : 0;
-  const ok = !!(fl & 1), full = !!(fl & 4) || !!(fl & 8);
+  const ok = !!(fl & 1), full = !!(fl & 4) || !!(fl & 8), looped = !!(fl & 32);   // looped (v5): throws still save, oldest replaced
   sessionOn = !!(fl & 2);
   const pct = Math.min(100, used / cap * 100), left = Math.max(0, (cap - used - 16) / KB_PER_S);
   $("logFill").style.width = pct.toFixed(1) + "%";
   $("logFill").style.background = full ? "var(--bad)" : sessionOn ? "var(--warn)" : "var(--accent2)";
   $("recCard").classList.toggle("full", ok && full);
-  $("logState").textContent = !ok ? "not available" : full ? "FULL – move the data off" : sessionOn ? `● recording ${fmtTime(secs)}` : "ready";
+  $("logState").textContent = !ok ? "not available" : full ? "FULL – move the data off" : sessionOn ? `● recording ${fmtTime(secs)}` : looped ? "saving throws" : "ready";
   $("logInfo").innerHTML = !ok ? "Recorder chip not found (old firmware?)."
     : full ? `<b>Memory full – recording stopped.</b> ${used} of ${cap} KB, ${rec} records. Plug into the computer and run <code>py disclab.py export --clear</code>.`
+    : looped ? `Throws are saved as always; the memory has looped, so the oldest are being replaced (${rec} records kept). A full recording needs a download and an erase first.`
     : `${used} of ${cap} KB used (${pct.toFixed(0)}%) · about <b>${fmtTime(left)}</b> of full recording left`;
-  $("sessBtn").textContent = sessionOn ? "■ Stop recording" : full ? "Memory full – move the data off first" : "● Record all sensor data";
+  $("sessBtn").textContent = sessionOn ? "■ Stop recording" : full || looped ? "Memory full – move the data off first" : "● Record all sensor data";
   $("sessBtn").classList.toggle("on", sessionOn);
-  $("sessBtn").disabled = !cmdChar || !ok || (full && !sessionOn);
+  $("sessBtn").disabled = !cmdChar || !ok || ((full || looped) && !sessionOn);
   $("logClearBtn").disabled = !cmdChar || !ok;
   document.querySelectorAll(".testBtn").forEach(b => {
     b.disabled = !cmdChar || !ok || full;

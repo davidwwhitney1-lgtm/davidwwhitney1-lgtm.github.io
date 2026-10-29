@@ -277,11 +277,68 @@ function parseInfo(dv) {
            alsb: f(0), glsb: f(1), bias: [f(2), f(3), f(4)], radius: f(14), batt: f(15) };
 }
 function parseCap(dv) {                                       // a throw's results packet (as sim.html)
-  const f = k => dv.getFloat32(20 + 4 * k, true);
+  const f = k => dv.getFloat32(20 + 4 * k, true), v5 = dv.byteLength >= 72;
   return { start: dv.getUint32(2, true), n: dv.getUint16(6, true), rel: dv.getUint16(8, true), liveRel: dv.getUint16(10, true),
     counted: dv.getUint8(12), src: dv.getUint8(13), flags: dv.getUint16(14, true), end: dv.getUint8(16), sens: dv.getUint8(17),
-    res: Array.from({ length: 10 }, (_, k) => f(k)), tMs: dv.getUint32(60, true), at: performance.now() };
+    res: Array.from({ length: 10 }, (_, k) => f(k)), tMs: dv.getUint32(60, true), at: performance.now(),
+    // v5 firmware: the disc's own record of it (to confirm it, "ack N"), why it was rejected, and "low confidence"
+    recNo: v5 ? dv.getUint32(64, true) : null, why: v5 ? dv.getUint8(68) : 0, lowConf: v5 && !!(dv.getUint16(70, true) & 1) };
 }
+// ---- v5: every throw is also saved on the disc. The page confirms each one it gets ("ack N"); after a reconnect it
+// asks for the ones it never got ("unsent"), which come back as a start packet (7: the results, plus the disc's
+// settings then), the readings with the flight after them (6), and an end (8).
+const doneRecs = new Set();
+function ackCap(c) {
+  if (c.recNo == null || c.recNo === 0xFFFFFFFF) return;
+  doneRecs.add(c.recNo); sendCmd("ack " + c.recNo);
+}
+let stored = null;
+function onStored(dv, type) {
+  if (type === 7) {
+    if (dv.byteLength < 96) return;
+    const c = parseCap(dv), g = o => dv.getFloat32(o, true);
+    Object.assign(c, { total: dv.getUint16(72, true), boot: dv.getUint16(74, true), bias: [g(76), g(80), g(84)], radius: g(88), alsb: g(92), stored: true });
+    stored = { c, S: new Int16Array(Math.max(1, c.total) * 6), have: new Uint8Array(Math.max(1, c.total)) };
+    return;
+  }
+  if (!stored || dv.byteLength < 6 || dv.getUint32(2, true) !== stored.c.recNo) return;
+  if (type === 6 && dv.byteLength >= 8) {
+    const k = Math.min(dv.getUint8(1), Math.floor((dv.byteLength - 8) / 12)), i0 = dv.getUint16(6, true), s = stored;
+    for (let j = 0; j < k && i0 + j < s.c.total; j++) {
+      for (let q = 0; q < 6; q++) s.S[(i0 + j) * 6 + q] = dv.getInt16(8 + j * 12 + 2 * q, true);
+      s.have[i0 + j] = 1;
+    }
+    return;
+  }
+  if (type === 8) { const s = stored; stored = null; finishStored(s); }
+}
+function finishStored(s) {
+  const c = s.c;
+  if (doneRecs.has(c.recNo)) { ackCap(c); return; }               // it came in live after all
+  const n = Math.min(c.total, c.n + EXTRA), S = s.S.subarray(0, n * 6).slice();
+  let missing = 0, first = -1;
+  for (let i = 0; i < n; i++) {
+    if (s.have[i]) { if (first < 0) first = i; continue; }
+    missing++; if (i) S.copyWithin(i * 6, (i - 1) * 6, i * 6);
+  }
+  for (let i = 0; i < Math.max(0, first); i++) S.copyWithin(i * 6, first * 6, first * 6 + 6);
+  // the measured landing, from the flight the disc recorded after the capture (as watchLanding)
+  let landAt = null;
+  const AL = c.alsb > 0 ? c.alsb : info.alsb, hist = [];
+  for (let i = c.n; i < c.total; i++) {
+    if (!s.have[i]) { hist.length = 0; continue; }
+    const a = [s.S[i * 6 + 3] * AL, s.S[i * 6 + 4] * AL, s.S[i * 6 + 5] * AL];
+    if (hist.length === 12) {
+      const m = [0, 1, 2].map(k => DiscTrack.median(hist.map(h => h[k])));
+      if (Math.hypot(a[0] - m[0], a[1] - m[1], a[2] - m[2]) > 4.5) { landAt = i; break; }
+      hist.shift();
+    }
+    hist.push(a);
+  }
+  showCap(c, S, first < 0 ? n : missing, { landAt });
+  ackCap(c);
+}
+const WHY_TEXT = { 1: "the pull was too weak", 2: "it found too little spin", 3: "it couldn't find where the hand let go", 4: "readings were lost", 5: "it looked like handling" };
 function onPacket(dv) {
   if (dv.byteLength < 2) return;
   const type = dv.getUint8(0);
@@ -301,6 +358,7 @@ function onPacket(dv) {
     return;
   }
   if (type === 3 && dv.byteLength >= 64) { pendingCaps.push(parseCap(dv)); tryCaps(); return; }
+  if (type >= 6 && type <= 8) { onStored(dv, type); return; }
   if (type !== 1 || dv.byteLength < 6) return;
   const n = Math.min(dv.getUint8(1), Math.floor((dv.byteLength - 6) / 12)), seq = dv.getUint32(2, true), c = new Int16Array(6);
   if (seq + n < st.lastSeq - LRING) { st.lastSeq = -1; seqs.fill(-1); pendingCaps.length = 0; }   // numbers restarted (a missed info packet)
@@ -345,8 +403,6 @@ function tryCaps() {
     const c = pendingCaps[0], end = c.start + c.n - 1, age = performance.now() - c.at;
     if (st.lastSeq < end + EXTRA && age < (st.lastSeq >= end ? 1500 : 15000)) return;
     pendingCaps.shift();
-    if (!c.counted && !(c.res[6] >= 4 && c.res[1] >= 120)) continue;          // handling the disc, not a throw
-    if (c.n < 445) { showHint("A throw came in, but the disc's recording of it was too short to rebuild.", 6000); continue; }
     let n = c.n; while (n < c.n + EXTRA && seqs[(c.start + n) % LRING] === c.start + n) n++;
     const S = new Int16Array(n * 6); let missing = 0, first = -1;
     for (let i = 0; i < n; i++) {
@@ -354,19 +410,44 @@ function tryCaps() {
       if (seqs[sl] === sq) { S.set(ring.subarray(sl * 6, sl * 6 + 6), i * 6); if (first < 0) first = i; }
       else { missing++; if (i) S.copyWithin(i * 6, (i - 1) * 6, i * 6); }      // a lost reading: a copy (the tracker bridges it)
     }
-    if (first < 0 || missing > 0.2 * c.n) { showHint(`A throw came in, but ${missing} of its ${c.n} readings were lost on the way: no replay for this one.`, 7000); continue; }
-    for (let i = 0; i < first; i++) S.copyWithin(i * 6, first * 6, first * 6 + 6);   // lost at the very start: the first that came
-    let th = null;
-    try { th = analyzeThrow(c, S, missing); } catch (e) { console.error("rebuilding the throw failed", e); }
-    if (!th) continue;
-    if (th.nw.info.longestGap > 3) { showHint(`A throw came in, but ${th.nw.info.longestGap} readings in a row were lost during the pull: no replay for this one.`, 7000); continue; }
-    // picked up, or dropping out of the net: a throw spins - well over 120 rpm by both counts
-    if (Math.abs(th.nw.six.spin) < 120 && !(c.counted && c.res[1] >= 120)) continue;
-    DiscTrack.teach(th.id, c, th.nw, th.disc);
-    if (th.pred) landWatch = { th, relSeq: c.start + th.iRel, next: c.start + th.S.length / 6, hist: [] };
-    throwsList.push(th); if (throwsList.length > 12) throwsList.shift();
-    enterReplay(th);
+    for (let i = 0; i < Math.max(0, first); i++) S.copyWithin(i * 6, first * 6, first * 6 + 6);   // lost at the very start: the first that came
+    // Lost on the way over Bluetooth: leave it unconfirmed - the disc kept it and sends it again ("unsent")
+    if (first < 0 || missing > 0.2 * c.n) {
+      if (c.recNo != null && c.recNo !== 0xFFFFFFFF) { showHint("A throw's readings were cut off over Bluetooth – fetching the disc's own copy…", 6000); sendCmd("unsent"); }
+      else showHint(`A throw came in, but ${missing} of its ${c.n} readings were lost on the way: no replay for this one.`, 7000);
+      continue;
+    }
+    showCap(c, S, missing, {});
+    ackCap(c);
   }
+}
+// A throw's readings in hand (live, or from the disc's memory): rebuild it and show it. A hard pull is never dropped
+// without saying why.
+function showCap(c, S, missing, o) {
+  const hard = c.res[6] >= 8;
+  if (!c.counted && !hard && !(c.res[6] >= 4 && c.res[1] >= 120)) {          // handling the disc, not a throw
+    if (c.res[6] >= 4 && c.why && c.why !== 5) showHint(`The disc saw a pull (${c.res[6].toFixed(0)} g) but didn't count it: ${WHY_TEXT[c.why] || "a check failed"}.`, 6000);
+    return;
+  }
+  if (c.n < 445) { showHint("A throw came in, but the disc's recording of it was too short to rebuild.", 6000); return; }
+  let th = null;
+  try { th = analyzeThrow(c, S, missing); } catch (e) { console.error("rebuilding the throw failed", e); }
+  if (!th) { if (hard) showHint(`A hard pull (${c.res[6].toFixed(0)} g) came in, but no release could be found in its readings: no replay for this one.`, 8000); return; }
+  if (th.nw.info.longestGap > 3) { showHint(`A throw came in, but ${th.nw.info.longestGap} readings in a row were lost during the pull: no replay for this one.`, 7000); return; }
+  // picked up, or dropping out of the net: a throw spins - well over 120 rpm by both counts
+  if (Math.abs(th.nw.six.spin) < 120 && !(c.counted && c.res[1] >= 120)) {
+    if (hard) showHint(`A hard pull (${c.res[6].toFixed(0)} g) came in, but it hardly spun (${Math.abs(th.nw.six.spin).toFixed(0)} rpm) – not shown as a throw.`, 8000);
+    return;
+  }
+  th.lowConf = c.lowConf || !c.counted;
+  th.late = !!c.stored;
+  DiscTrack.teach(th.id, c, th.nw, th.disc);
+  if (th.pred && o.landAt != null) th.pred.landT = (o.landAt - th.iRel) / th.rate;
+  else if (th.pred && !c.stored) landWatch = { th, relSeq: c.start + th.iRel, next: c.start + th.S.length / 6, hist: [] };
+  throwsList.push(th); if (throwsList.length > 12) throwsList.shift();
+  enterReplay(th);
+  if (th.late) showHint("Recovered from the disc's memory: this throw was missed while the disc was out of range.", 6000);
+  else if (th.lowConf) showHint(`A hard pull the disc ${c.counted ? "nearly rejected" : "didn't count"} (${WHY_TEXT[c.why] || "a check failed"}): shown, but treat its numbers with care.`, 7000);
 }
 
 // ================================================================ a throw, rebuilt (track.js), ready to replay
@@ -379,9 +460,10 @@ function discName() {
   try { const s = JSON.parse(localStorage.getItem("disctracker.sim.settings.v1")) || {}; return (s.disc && s.disc.name) || ""; } catch { return ""; }
 }
 function analyzeThrow(c, S, missing) {
-  const n = S.length / 6, disc = discName(), L = DiscTrack.learned(disc), rCal = info.radius > 0.0005;
-  const I = { alsb: info.alsb, glsb: info.glsb, bias: info.bias.slice(), radius: rCal ? info.radius : L.radius, odr: info.odr, rate: rateNow(), kI: L.kI || 0.93,
-              kAero: L.kAero };
+  const n = S.length / 6, disc = discName(), L = DiscTrack.learned(disc);
+  const radius = c.stored ? c.radius : info.radius, rCal = radius > 0.0005;    // a throw from the disc's memory: its settings then
+  const I = { alsb: (c.stored && c.alsb > 0) ? c.alsb : info.alsb, glsb: info.glsb, bias: c.stored ? c.bias.slice() : info.bias.slice(),
+              radius: rCal ? radius : L.radius, odr: info.odr, rate: rateNow(), kI: L.kI || 0.93, kAero: L.kAero };
   const o = { iRel: c.rel < n ? c.rel : undefined, spinRpm: c.res[1] > 0 ? c.res[1] : undefined };
   const nw = DiscTrack.reconstruct(S, I, o), old = DiscTrack.reconstruct(S, I, Object.assign({ old: true }, o));
   if (!nw.info.rel || !old.info.rel) return null;
@@ -445,7 +527,7 @@ function analyzeThrow(c, S, missing) {
     accMs: accN / rate * 1000, gyrMs: gyrN / rate * 1000, peak, relShift: iRel - (nw.info.relGiven ?? iRel), missing, at: new Date(),
     // the net: where the hit was found, or - when the recording stopped short of it - just past its last reading
     impact: hit || c.end === 1, netJ: hit ? iImp - kA : N - 1, netBeyond: !hit,
-    id: `${info.boot}-${c.start}-${c.tMs}`, kI: I.kI, kIN: L.kI ? L.nKI : 0, radius: I.radius, disc, nKA: L.nKA, needKA: L.needKA,
+    id: `${c.stored ? c.boot : info.boot}-${c.start}-${c.tMs}`, kI: I.kI, kIN: L.kI ? L.nKI : 0, radius: I.radius, disc, nKA: L.nKA, needKA: L.needKA,
     rSrc: rCal ? "calibrated" : I.radius > 0 ? `learned from ${L.nR} throws` : "" };
 }
 
@@ -529,6 +611,7 @@ async function setupGatt() {
   bt.addEventListener("characteristicvaluechanged", e => onPacket(e.target.value));
   await bt.startNotifications();
   await sendCmd("bton");                                      // every reading, 416 a second
+  await sendCmd("unsent");                                    // and any throws it kept while out of range
   setConn("on"); showMsg("");
 }
 async function disconnect() {
@@ -872,13 +955,15 @@ function renderReplayPanel() {
     `<details id="rpNotes"${rp.notesOpen ?? !matchMedia("(max-width: 760px)").matches ? " open" : ""}><summary>How it was rebuilt</summary><ul class="notes">` +
     (th.accMs > 0 ? `<li>The force passed the sensor's 16 g for ${th.accMs.toFixed(0)} ms of the pull; rebuilt from the readings it did get, it peaked near ${th.peak.toFixed(0)} g.</li>` : `<li>The force stayed within the sensor's 16 g: nothing had to be rebuilt.</li>`) +
     (th.gyrMs > 0 ? `<li>The spin passed the gyro's 382 rpm ${th.gyrMs.toFixed(0)} ms before release; the spin-up in between is ${th.nw.info.ramp === "fitted" ? "the shape that fits the force readings best" : "a smooth curve to the flight's spin"}.</li>` : "") +
+    (th.late ? `<li>Missed while the disc was out of range: this came from the disc's own memory once it reconnected.</li>` : "") +
+    (th.lowConf ? `<li><b>Low confidence</b>: a hard pull that ${th.c.counted ? "the disc nearly rejected" : "the disc didn't count"} (${WHY_TEXT[th.c.why] || "a check failed"}). It's rebuilt from the raw readings; treat the numbers with care.</li>` : "") +
     spinNote(th) + speedNote(th) +
     (th.nw.info.relSrc !== "settled" ? `<li>Where the hand let go wasn't clear (the readings never settled into free flight): this uses the disc's own release mark.</li>`
       : Math.abs(th.relShift) >= 3 ? `<li>Released ${(Math.abs(th.relShift) / th.rate * 1000).toFixed(0)} ms ${th.relShift > 0 ? "later" : "earlier"} than the disc marked${th.relShift < 0 && th.nw.info.relGiven >= th.kB - 2 ? " (it marked the net)" : ""}: here the readings settled into free flight once the disc was spun up.</li>` : "") +
     (th.missing ? `<li>${th.missing} readings were lost over Bluetooth and bridged.</li>` : "") +
     (th.pred ? `<li>Thrown in the open: the flight after the first half second is predicted from these release numbers with the simulator's ` +
       `${th.pred.disc.name} (${th.pred.disc.speed}/${th.pred.disc.glide}/${th.pred.disc.turn}/${th.pred.disc.fade}) - the sensor can't measure where the disc is over seconds of flight. ` +
-      `${th.pred.landT != null ? `Measured time in the air: <b>${th.pred.landT.toFixed(1)} s</b> (predicted ${th.pred.fl.timeS.toFixed(1)} s).` : "The time it really spent in the air shows here once it lands."}</li>` : "") +
+      `${th.pred.landT != null ? `Measured time in the air: <b>${th.pred.landT.toFixed(1)} s</b> (predicted ${th.pred.fl.timeS.toFixed(1)} s).` : th.late ? "No landing was found in the flight the disc recorded." : "The time it really spent in the air shows here once it lands."}</li>` : "") +
     `<li>Orange: the rebuilt flight. Grey dashed: the same readings added up as they came, cut off at 16 g.</li></ul></details>`;
   $("rpNotes").ontoggle = () => { rp.notesOpen = $("rpNotes").open; frameView(); };
   $("rpSel").innerHTML = throwsList.map((t, i) => `<option value="${i}">${t.at.toLocaleTimeString()} · ${t.nw.six.speed.toFixed(0)} mph</option>`).reverse().join("");
