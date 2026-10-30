@@ -741,7 +741,9 @@ function parseCap(dv) {
   const f = k => dv.getFloat32(20 + 4 * k, true);
   return { start: dv.getUint32(2, true), n: dv.getUint16(6, true), rel: dv.getUint16(8, true), liveRel: dv.getUint16(10, true),
     counted: dv.getUint8(12), src: dv.getUint8(13), flags: dv.getUint16(14, true), end: dv.getUint8(16), sens: dv.getUint8(17),
-    res: Array.from({ length: 10 }, (_, k) => f(k)), tMs: dv.getUint32(60, true), at: performance.now() };
+    res: Array.from({ length: 10 }, (_, k) => f(k)), tMs: dv.getUint32(60, true), at: performance.now(),
+    // firmware v5's 72-byte packet: why it was rejected, and flags2
+    why: dv.byteLength >= 72 ? dv.getUint8(68) : 0, flags2: dv.byteLength >= 72 ? dv.getUint16(70, true) : 0 };
 }
 const tMsAt = seq => { const I = rec.info || DEFAULT_INFO; return Math.max(0, Math.round(I.millis + (seq - I.seq) * 1000 / I.odr)); };
 function header(type, n, tMs, x = {}) {
@@ -761,7 +763,13 @@ function header(type, n, tMs, x = {}) {
     F(160, P.relMinRpm); F(164, P.relPeakG); dv.setUint16(168, P.prePeak, true); dv.setUint16(170, P.steadyN, true);
     dv.setUint16(172, I.calFlags || 0, true); dv.setInt16(174, I.tempCdeg || 0, true); F(176, P.biasTol);
     dv.setUint32(180, (I.calSeq || 0) >>> 0, true); dv.setUint32(184, (x.seq0 || 0) >>> 0, true); F(188, x.lever);
-    F(192, discRate(I, rec.infos));                            // the disc's measured samples per second (the odr above is the nominal 416)
+    // the disc's measured samples per second (the odr above is the nominal 416). Version 5 uses byte 192 for its own
+    // fields (flash_log.h), so from there on the rate sits in the first spare bytes, at 204.
+    if (I.logVer >= 5) {
+      dv.setUint8(192, 0);                                     // sent: 0, this file is the computer's copy
+      dv.setUint8(193, x.why ?? 0); dv.setUint16(194, x.flags2 ?? 0, true);
+      F(204, discRate(I, rec.infos));
+    } else F(192, discRate(I, rec.infos));
   }
   return buf;
 }
