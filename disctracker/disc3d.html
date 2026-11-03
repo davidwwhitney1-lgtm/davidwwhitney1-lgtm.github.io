@@ -163,8 +163,8 @@
 <div id="timeline" class="card" hidden><canvas id="tl" aria-label="The throw over time: force and spin, measured and rebuilt"></canvas></div>
 <div id="spinBig"><div><span class="n" id="rpmN">0</span><span class="u">rpm</span></div><div class="s" id="rpmS"></div></div>
 
-<script src="flight.js?v=2026-10-21b"></script>
-<script src="track.js?v=2026-10-28"></script>
+<script src="flight.js?v=2026-11-01"></script>
+<script src="track.js?v=2026-11-01b"></script>
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -201,6 +201,7 @@ const st = {
 // 405-430 count, and the middle one is used once two agree within 0.3 %.
 const rateObs = []; let rateRef = null, lastBoot = null;
 function rateNow() {
+  if (info.rateHz > 400 && info.rateHz < 430) return info.rateHz;     // firmware v6 measures its own
   if (rateObs.length < 2) return 418.6;
   const a = rateObs.slice().sort((x, y) => x - y), m = a[a.length >> 1];
   return a.filter(r => Math.abs(r - m) < 0.003 * m).length >= 2 ? m : 418.6;
@@ -274,7 +275,8 @@ const pendingCaps = [], throwsList = [];
 function parseInfo(dv) {
   const f = k => dv.getFloat32(16 + 4 * k, true);
   return { boot: dv.getUint16(2, true), seq: dv.getUint32(4, true), millis: dv.getUint32(8, true), odr: dv.getUint16(12, true) || 416,
-           alsb: f(0), glsb: f(1), bias: [f(2), f(3), f(4)], radius: f(14), batt: f(15) };
+           alsb: f(0), glsb: f(1), bias: [f(2), f(3), f(4)], R: [f(5), f(6), f(7), f(8), f(9), f(10), f(11), f(12), f(13)], radius: f(14), batt: f(15),
+           biasTol: dv.byteLength >= 120 ? dv.getUint8(119) / 10 : undefined, rateHz: dv.byteLength >= 124 ? dv.getFloat32(120, true) : 0 };
 }
 function parseCap(dv) {                                       // a throw's results packet (as sim.html)
   const f = k => dv.getFloat32(20 + 4 * k, true), v5 = dv.byteLength >= 72;
@@ -287,10 +289,12 @@ function parseCap(dv) {                                       // a throw's resul
 // ---- v5: every throw is also saved on the disc. The page confirms each one it gets ("ack N"); after a reconnect it
 // asks for the ones it never got ("unsent"), which come back as a start packet (7: the results, plus the disc's
 // settings then), the readings with the flight after them (6), and an end (8).
+// (with the boot's number: erasing the log starts the record numbers again)
 const doneRecs = new Set();
+const recKey = c => `${c.stored ? c.boot : info.boot}:${c.recNo}`;
 function ackCap(c) {
   if (c.recNo == null || c.recNo === 0xFFFFFFFF) return;
-  doneRecs.add(c.recNo); sendCmd("ack " + c.recNo);
+  doneRecs.add(recKey(c)); sendCmd("ack " + c.recNo);
 }
 let stored = null;
 function onStored(dv, type) {
@@ -314,7 +318,7 @@ function onStored(dv, type) {
 }
 function finishStored(s) {
   const c = s.c;
-  if (doneRecs.has(c.recNo)) { ackCap(c); return; }               // it came in live after all
+  if (doneRecs.has(recKey(c))) { ackCap(c); return; }             // it came in live after all
   const n = Math.min(c.total, c.n + EXTRA), S = s.S.subarray(0, n * 6).slice();
   let missing = 0, first = -1;
   for (let i = 0; i < n; i++) {
@@ -324,17 +328,8 @@ function finishStored(s) {
   for (let i = 0; i < Math.max(0, first); i++) S.copyWithin(i * 6, first * 6, first * 6 + 6);
   // the measured landing, from the flight the disc recorded after the capture (as watchLanding)
   let landAt = null;
-  const AL = c.alsb > 0 ? c.alsb : info.alsb, hist = [];
-  for (let i = c.n; i < c.total; i++) {
-    if (!s.have[i]) { hist.length = 0; continue; }
-    const a = [s.S[i * 6 + 3] * AL, s.S[i * 6 + 4] * AL, s.S[i * 6 + 5] * AL];
-    if (hist.length === 12) {
-      const m = [0, 1, 2].map(k => DiscTrack.median(hist.map(h => h[k])));
-      if (Math.hypot(a[0] - m[0], a[1] - m[1], a[2] - m[2]) > 4.5) { landAt = i; break; }
-      hist.shift();
-    }
-    hist.push(a);
-  }
+  const land = new DiscTrack.LandingWatch(c.alsb > 0 ? c.alsb : info.alsb, info.glsb, c.bias ? c.bias[2] : 0);
+  for (let i = c.n; i < c.total && landAt == null; i++) if (s.have[i]) landAt = land.feed(s.S.subarray(i * 6, i * 6 + 6), i);
   showCap(c, S, first < 0 ? n : missing, { landAt });
   ackCap(c);
 }
@@ -377,24 +372,20 @@ function onPacket(dv) {
 // after it come from the stream too - the rest of the flight, for the spin and the end of the flight. Wait for them up
 // to 1.5 s (15 s for the recording's own).
 const EXTRA = 160;
-// After a throw in the open: the first reading more than 4.5 g from the middle of the 12 before it is the landing (or
-// a catch) - its time after release, next to the predicted flight time. Given up after 12 s.
+// After a throw in the open: the landing (or a catch), by the end-of-flight rule (track.js LandingWatch) - its time after
+// release, next to the predicted flight time. Given up after 12 s.
 let landWatch = null;
 function watchLanding() {
-  const w = landWatch, AL = info.alsb;
+  const w = landWatch;
+  if (!w.land) w.land = new DiscTrack.LandingWatch(info.alsb, info.glsb, info.bias[2]);
   for (; w.next <= st.lastSeq; w.next++) {
-    const sl = w.next % LRING; if (seqs[sl] !== w.next) { w.hist.length = 0; continue; }
-    const a = [ring[sl * 6 + 3] * AL, ring[sl * 6 + 4] * AL, ring[sl * 6 + 5] * AL];
-    if (w.hist.length === 12) {
-      const m = [0, 1, 2].map(k => DiscTrack.median(w.hist.map(h => h[k])));
-      if (Math.hypot(a[0] - m[0], a[1] - m[1], a[2] - m[2]) > 4.5) {
-        w.th.pred.landT = (w.next - w.relSeq) / w.th.rate; landWatch = null;
-        if (rp.on && rp.th === w.th) renderReplayPanel();
-        return;
-      }
-      w.hist.shift();
+    const sl = w.next % LRING; if (seqs[sl] !== w.next) continue;
+    const at = w.land.feed(ring.subarray(sl * 6, sl * 6 + 6), w.next);
+    if (at != null) {
+      w.th.pred.landT = (at - w.relSeq) / w.th.rate; landWatch = null;
+      if (rp.on && rp.th === w.th) renderReplayPanel();
+      return;
     }
-    w.hist.push(a);
   }
   if ((st.lastSeq - w.relSeq) / w.th.rate > 12) landWatch = null;
 }
@@ -417,8 +408,7 @@ function tryCaps() {
       else showHint(`A throw came in, but ${missing} of its ${c.n} readings were lost on the way: no replay for this one.`, 7000);
       continue;
     }
-    showCap(c, S, missing, {});
-    ackCap(c);
+    if (showCap(c, S, missing, {}) !== false) ackCap(c);
   }
 }
 // A throw's readings in hand (live, or from the disc's memory): rebuild it and show it. A hard pull is never dropped
@@ -433,7 +423,11 @@ function showCap(c, S, missing, o) {
   let th = null;
   try { th = analyzeThrow(c, S, missing); } catch (e) { console.error("rebuilding the throw failed", e); }
   if (!th) { if (hard) showHint(`A hard pull (${c.res[6].toFixed(0)} g) came in, but no release could be found in its readings: no replay for this one.`, 8000); return; }
-  if (th.nw.info.longestGap > 3) { showHint(`A throw came in, but ${th.nw.info.longestGap} readings in a row were lost during the pull: no replay for this one.`, 7000); return; }
+  if (th.nw.info.longestGap > 3) {
+    // the disc's own copy has no such gap: ask for it, and leave this one unconfirmed
+    if (!c.stored && c.recNo != null && c.recNo !== 0xFFFFFFFF) { showHint(`${th.nw.info.longestGap} readings in a row were lost over Bluetooth during the pull – fetching the disc's own copy…`, 6000); sendCmd("unsent"); return false; }
+    showHint(`A throw came in, but ${th.nw.info.longestGap} readings in a row were lost during the pull: no replay for this one.`, 7000); return;
+  }
   // picked up, or dropping out of the net: a throw spins - well over 120 rpm by both counts
   if (Math.abs(th.nw.six.spin) < 120 && !(c.counted && c.res[1] >= 120)) {
     if (hard) showHint(`A hard pull (${c.res[6].toFixed(0)} g) came in, but it hardly spun (${Math.abs(th.nw.six.spin).toFixed(0)} rpm) – not shown as a throw.`, 8000);
@@ -441,10 +435,17 @@ function showCap(c, S, missing, o) {
   }
   th.lowConf = c.lowConf || !c.counted;
   th.late = !!c.stored;
-  DiscTrack.teach(th.id, c, th.nw, th.disc);
+  // a roll or a bounce after the last throw: not a throw to teach from or to jump to (as addThrow in the phone app)
+  const prev = throwsList[throwsList.length - 1], s6 = th.nw.six;
+  th.bounce = !c.stored && !!prev && Date.now() - prev.at < 10000 && (s6.spin < 0.6 * prev.nw.six.spin || s6.speed < 0.5 * prev.nw.six.speed);
+  if (th.bounce) { showHint("That looked like a bounce or a roll, not a new throw: left out.", 5000); return; }
+  DiscTrack.teach(th.id, c, th.nw, th.disc, trackerId());
+  if (EMBED) window.parent.postMessage({ dt: "rebuilt", disc: { speed: c.res[0], spin: c.res[1], hyzer: c.res[2] },
+    six: { speed: s6.speed, spin: s6.spin, hyzer: s6.hyzer, nose: s6.nose, launch: s6.launch, wobble: th.nw.info.wobble, atLeast: !!(th.nw.info.spin && th.nw.info.spin.atLeast), speedSrc: th.nw.info.speedSrc, spinSrc: th.nw.info.spinSrc } }, location.origin);
   if (th.pred && o.landAt != null) th.pred.landT = (o.landAt - th.iRel) / th.rate;
   else if (th.pred && !c.stored) landWatch = { th, relSeq: c.start + th.iRel, next: c.start + th.S.length / 6, hist: [] };
   throwsList.push(th); if (throwsList.length > 12) throwsList.shift();
+  saveReplay(c, S, missing, th);
   enterReplay(th);
   if (th.late) showHint("Recovered from the disc's memory: this throw was missed while the disc was out of range.", 6000);
   else if (th.lowConf) showHint(`A hard pull the disc ${c.counted ? "nearly rejected" : "didn't count"} (${WHY_TEXT[c.why] || "a check failed"}): shown, but treat its numbers with care.`, 7000);
@@ -455,15 +456,57 @@ function showCap(c, S, missing, o) {
 // screen (+Y), the camera behind and above the thrower's side.
 const FLOOR_Z = -0.35, REL_H = FLOOR_Z + 1.0;
 // the disc being thrown (its drag ratio is learned per disc): the phone app's choice inside it, else the simulator's
+// the tracker this throw came from: learned values are kept per tracker
+function trackerId() { return EMBED ? (embedSim && embedSim.tracker) || "" : (device && device.id) || ""; }
+// ---- the replay list survives a reload (IndexedDB: 12 throws of about 20 KB). Worked out again when the page opens, one
+// at a time, so it doesn't hold the page up.
+const REPLAY_DB = "disc3d.replays.v1";
+function replayDb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(REPLAY_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("throws", { keyPath: "id" });
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+async function saveReplay(c, S, missing, th) {
+  try {
+    const db = await replayDb(), tx = db.transaction("throws", "readwrite"), os = tx.objectStore("throws");
+    const c2 = Object.assign({}, c, { stored: true, restored: true, boot: c.stored ? c.boot : info.boot, bias: c.bias || info.bias.slice(), radius: c.stored ? c.radius : info.radius, alsb: c.alsb || info.alsb, rate: th.rate });
+    os.put({ id: th.id, t: Date.now(), c: c2, S, missing });
+    const all = os.getAll();
+    all.onsuccess = () => { const v = all.result.sort((a, b) => a.t - b.t); for (let i = 0; i < v.length - 12; i++) os.delete(v[i].id); };
+    tx.oncomplete = () => db.close();
+  } catch (e) { console.warn("saving the replay", e); }
+}
+async function loadReplays() {
+  try {
+    const db = await replayDb(), req = db.transaction("throws").objectStore("throws").getAll();
+    req.onsuccess = () => {
+      db.close();
+      const v = req.result.sort((a, b) => a.t - b.t);
+      const next = () => {
+        const e = v.shift(); if (!e) return;
+        try {
+          if (!throwsList.some(t => t.id === e.id)) {
+            const th = analyzeThrow(e.c, e.S, e.missing);
+            if (th) { th.id = e.id; th.at = new Date(e.t); th.lowConf = e.c.lowConf || !e.c.counted; th.late = false; throwsList.splice(throwsList.findIndex(t => t.at > th.at) + 1 || throwsList.length, 0, th); if (throwsList.length > 12) throwsList.shift(); }
+          }
+        } catch (err) { console.warn("reloading a replay", err); }
+        setTimeout(next, 30);
+      };
+      next();
+    };
+  } catch (e) { console.warn("reading the replays", e); }
+}
 function discName() {
   if (embedSim && embedSim.disc && embedSim.disc.name) return embedSim.disc.name;
   try { const s = JSON.parse(localStorage.getItem("disctracker.sim.settings.v1")) || {}; return (s.disc && s.disc.name) || ""; } catch { return ""; }
 }
 function analyzeThrow(c, S, missing) {
-  const n = S.length / 6, disc = discName(), L = DiscTrack.learned(disc);
+  const n = S.length / 6, disc = discName(), L = DiscTrack.learned(disc, trackerId());
   const radius = c.stored ? c.radius : info.radius, rCal = radius > 0.0005;    // a throw from the disc's memory: its settings then
   const I = { alsb: (c.stored && c.alsb > 0) ? c.alsb : info.alsb, glsb: info.glsb, bias: c.stored ? c.bias.slice() : info.bias.slice(),
-              radius: rCal ? radius : L.radius, odr: info.odr, rate: rateNow(), kI: L.kI || 0.93, kAero: L.kAero };
+              radius: rCal ? radius : L.radius, odr: info.odr, rate: c.rate || rateNow(), kI: L.kI || 0.99, kAero: L.kAero, h: L.h, biasTol: info.biasTol };
   const o = { iRel: c.rel < n ? c.rel : undefined, spinRpm: c.res[1] > 0 ? c.res[1] : undefined };
   const nw = DiscTrack.reconstruct(S, I, o), old = DiscTrack.reconstruct(S, I, Object.assign({ old: true }, o));
   if (!nw.info.rel || !old.info.rel) return null;
@@ -514,7 +557,7 @@ function analyzeThrow(c, S, missing) {
     const cfg = embedSim || { disc: sim.disc, windMph: 0, windFrom: 0 };
     const disc = Object.assign({ name: "Distance driver", speed: 12, glide: 5, turn: -1, fade: 3 }, cfg.disc || {}), s6 = nw.six, FT = 0.3048;
     const fl = DiscFlight.simulateFlight({ speedMph: s6.speed, spinRpm: s6.spin, hyzer: s6.hyzer, nose: s6.nose, launch: s6.launch,
-      wobble: nw.info.wobble ?? 2, ccw: !!nw.info.ccw, disc, windMph: +cfg.windMph || 0, windFrom: +cfg.windFrom || 0, heightFt: cfg.heightFt > 0 ? cfg.heightFt : (REL_H - FLOOR_Z) / FT });
+      wobble: nw.info.wobble ?? 2, ccw: !!nw.info.ccw, disc, rho: cfg.rho, windMph: +cfg.windMph || 0, windFrom: +cfg.windFrom || 0, heightFt: cfg.heightFt > 0 ? cfg.heightFt : (REL_H - FLOOR_Z) / FT });
     // flight.js: x down the line, y left, z up (ft) -> here: +Y down the line, +X right, Z up (m)
     // a release height other than the picture's (the phone app's setting) is eased out over the flight, so the
     // path still starts at the release point and ends on the grass
@@ -547,6 +590,10 @@ if (EMBED) {
     if (m.dt === "pkt") onPacket(new DataView(m.buf));
     else if (m.dt === "conn") { setConn(m.state); if (m.state === "on") showMsg(""); }
     else if (m.dt === "sim") embedSim = m;
+    else if (m.dt === "show") {                               // a throw tapped in the phone app's history
+      const th = [...throwsList].reverse().find(t => Math.abs(t.c.res[0] - m.speed) < 0.06 && Math.abs(t.c.res[1] - m.spin) < 1);
+      if (th) enterReplay(th); else showHint(`Throw #${m.seq}'s replay isn't here any more: only the last 12 are kept, and only throws made with this tab open or fetched from the disc.`, 7000);
+    }
   });
   window.parent.postMessage({ dt: "ready" }, location.origin);
 }
@@ -949,7 +996,8 @@ function renderReplayPanel() {
       `${th.pred.fl.timeS.toFixed(1)} s${th.pred.landT != null ? ` (measured ${th.pred.landT.toFixed(1)} s)` : ""}</span></div>` : "") +
     `<table class="cmp"><tr><th></th><th>rebuilt</th><th>disc's own</th><th></th></tr>` +
     row("Speed", f1(s.speed), f1(r[0]), "mph") + row("Spin", (atLeast ? "≥ " : "") + s.spin.toFixed(0), r[1].toFixed(0), "rpm") +
-    row("Hyzer", sg(s.hyzer), sg(r[2]), "°") + row("Nose", sg(s.nose), sg(r[3]), "°") + row("Launch", sg(s.launch), sg(r[4]), "°") + `</table>`;
+    row("Hyzer", sg(s.hyzer), sg(r[2]), "°") + row("Nose", sg(s.nose), sg(r[3]), "°") + row("Launch", sg(s.launch), sg(r[4]), "°") +
+    row("Wobble", th.nw.info.wobble == null ? "–" : f1(th.nw.info.wobble), (th.c.flags & 2) && !(th.c.flags & 32) ? "–" : f1(r[5]), "°") + `</table>`;
   $("rpMore").innerHTML = `<div class="legend"><span><i style="background:#ff9a3c"></i>rebuilt</span><span><i style="background:#9aa7b6"></i>as the sensor read it</span>` +
     `<span><i style="background:#60a5fa"></i>gyro</span><span><i style="background:rgba(248,113,113,0.5)"></i>sensor maxed out</span><span><i style="background:#ffd166"></i>release speed</span></div>` +
     `<details id="rpNotes"${rp.notesOpen ?? !matchMedia("(max-width: 760px)").matches ? " open" : ""}><summary>How it was rebuilt</summary><ul class="notes">` +
@@ -957,7 +1005,7 @@ function renderReplayPanel() {
     (th.gyrMs > 0 ? `<li>The spin passed the gyro's 382 rpm ${th.gyrMs.toFixed(0)} ms before release; the spin-up in between is ${th.nw.info.ramp === "fitted" ? "the shape that fits the force readings best" : "a smooth curve to the flight's spin"}.</li>` : "") +
     (th.late ? `<li>Missed while the disc was out of range: this came from the disc's own memory once it reconnected.</li>` : "") +
     (th.lowConf ? `<li><b>Low confidence</b>: a hard pull that ${th.c.counted ? "the disc nearly rejected" : "the disc didn't count"} (${WHY_TEXT[th.c.why] || "a check failed"}). It's rebuilt from the raw readings; treat the numbers with care.</li>` : "") +
-    spinNote(th) + speedNote(th) +
+    spinNote(th) + speedNote(th) + moreNotes(th) +
     (th.nw.info.relSrc !== "settled" ? `<li>Where the hand let go wasn't clear (the readings never settled into free flight): this uses the disc's own release mark.</li>`
       : Math.abs(th.relShift) >= 3 ? `<li>Released ${(Math.abs(th.relShift) / th.rate * 1000).toFixed(0)} ms ${th.relShift > 0 ? "later" : "earlier"} than the disc marked${th.relShift < 0 && th.nw.info.relGiven >= th.kB - 2 ? " (it marked the net)" : ""}: here the readings settled into free flight once the disc was spun up.</li>` : "") +
     (th.missing ? `<li>${th.missing} readings were lost over Bluetooth and bridged.</li>` : "") +
@@ -966,8 +1014,23 @@ function renderReplayPanel() {
       `${th.pred.landT != null ? `Measured time in the air: <b>${th.pred.landT.toFixed(1)} s</b> (predicted ${th.pred.fl.timeS.toFixed(1)} s).` : th.late ? "No landing was found in the flight the disc recorded." : "The time it really spent in the air shows here once it lands."}</li>` : "") +
     `<li>Orange: the rebuilt flight. Grey dashed: the same readings added up as they came, cut off at 16 g.</li></ul></details>`;
   $("rpNotes").ontoggle = () => { rp.notesOpen = $("rpNotes").open; frameView(); };
+  $("rpForget").onclick = e => { e.preventDefault(); if (confirm("Forget what this tracker has learned? Slower throws will teach it again.")) { DiscTrack.learnReset(trackerId()); renderReplayPanel(); } };
   $("rpSel").innerHTML = throwsList.map((t, i) => `<option value="${i}">${t.at.toLocaleTimeString()} · ${t.nw.six.speed.toFixed(0)} mph</option>`).reverse().join("");
   $("rpSel").value = String(throwsList.indexOf(th));
+}
+// What else the numbers rest on
+function moreNotes(th) {
+  const i = th.nw.info, f = th.c.flags || 0; let t = "";
+  if (i.axis) t += `<li>Nose and hyzer are on the disc's real axis, the middle of the circle its wobble traces${i.axisOff > 0.5 ? ` (at the moment it left the hand the axis was ${i.axisOff.toFixed(1)}° off that)` : ""}.</li>`;
+  if (i.h) t += `<li>The sensor sits about ${Math.abs(i.h * 1000).toFixed(1)} mm ${i.h > 0 ? "above" : "below"} the disc's middle, ${i.hObs !== undefined ? "read from this flight" : "from earlier throws"}; the force that adds under wobble is taken out.</li>`;
+  if (!i.still) t += "<li><b>The disc wasn't still</b> in the second before the pull, so “down” comes from its calmest moment. The angles are less certain, and a run-up's own speed isn't in the number.</li>";
+  if (i.spin && i.spin.atLeast && th.pred) t += "<li>The spin is only a minimum, so the predicted flight turns more than a real spin would. Wobble is unknown.</li>";
+  if (f & (1 << 9)) t += "<li>The gyro's zero error at the still moment was too far from the stored one, so the stored one was used.</li>";
+  if (f & (1 << 13)) t += "<li>The gyro's sideways axes maxed out in the pull too, so the disc's own angles are off.</li>";
+  if (info.R) { const a = Math.abs(Math.atan2(info.R[1], info.R[0]) * R2D) % 90, m = Math.min(a, 90 - a); if (m > 10) t += `<li><b>Recalibrate the placement</b> (calibration page): this disc's sideways axes are turned ${m.toFixed(0)}° from the sensor's own, which hides it when the sensor maxes out.</li>`; }
+  const L = DiscTrack.learned(th.disc, trackerId());
+  t += `<li>Learned on this tracker: ${L.nKI} throws for the wobble ratio, ${L.nR} for the radius, ${L.nH} for the sensor's height, ${L.nKA} for the drag of ${th.disc || "this disc"}. <a href="#" id="rpForget">Forget them</a></li>`;
+  return t;
 }
 // Where the speed came from: the pull's force (always, when the sensor saw enough of it), or the air's drag in flight
 // when both face axes were maxed for long (track.js airPush, the ratio learned per disc from fully seen pulls)
@@ -975,14 +1038,14 @@ function speedNote(th) {
   const i = th.nw.info, a = i.air, ms = x => (x / th.rate * 1000).toFixed(0), mph = v => (v * 2.2369363).toFixed(1);
   const name = th.disc ? `the ${th.disc}` : "this disc";
   if (i.speedSrc === "drag")
-    return `<li><b>Speed from the air's drag</b>: both face axes were maxed for ${ms(i.bothStuck)} ms of the pull, so nothing measured the push's peak. ` +
+    return `<li><b>Speed from the air's drag</b>: the sensor maxed out for ${ms(i.clippedA)} ms of the pull, so nothing measured the push's peak. ` +
       `In the first half second of flight the sensor read the drag in full (${(a.D0 / 9.80665).toFixed(2)} g), which gives ${mph(a.vDrag)} mph with ${name}'s ` +
       `drag learned from ${th.nKA} throws. The pull's own rebuild said ${mph(i.speedPull)} mph.</li>`;
-  if ((i.bothStuck || 0) >= 6) {
+  if ((i.clippedA || 0) >= 6) {
     const why = !a ? "the flight was too short to read the drag (it needs about 1.5 turns before the net)"
       : !a.good ? "the drag reading wasn't clean (at this spin the off-centre sensor maxes out in flight too)"
       : `${name}'s drag is still being learned (${th.nKA || 0} of ${th.needKA} gentler throws so far)`;
-    return `<li><b>Speed from the pull, less certain</b>: both face axes were maxed for ${ms(i.bothStuck)} ms, and ${why}. On pulls this hard the pull's rebuild tends to read low.</li>`;
+    return `<li><b>Speed from the pull, less certain</b>: the sensor maxed out for ${ms(i.clippedA)} ms, and ${why}. On pulls this hard the pull's rebuild can be well off, usually low.</li>`;
   }
   return "";
 }
@@ -990,7 +1053,7 @@ function speedNote(th) {
 function spinNote(th) {
   const i = th.nw.info, sp = i.spin, src = i.spinSrc, f0 = x => x.toFixed(0);
   if (src === "gyro") return "";
-  const kI = `its turning rate ÷ ${th.kI.toFixed(2)}, ${th.kIN ? `learned from ${th.kIN} slower throws` : "a golf disc's usual until slower throws teach it"}`;
+  const kI = `its turning rate ÷ ${th.kI.toFixed(2)}, ${th.kIN ? `learned from ${th.kIN} slower throws` : "a golf disc's shape until slower throws teach it"}`;
   const mm = th.radius > 0 ? `${(th.radius * 1000).toFixed(1)} mm off the axis, ${th.rSrc}` : "";
   const txt = src === "wobble+force" ? `Spin past the gyro's top, measured two ways that agree: the wobble, ${f0(sp.wobble)} rpm (${kI}); the off-centre force, ${f0(sp.force)} rpm (sensor ${mm}).`
     : src.startsWith("wobble (") ? `Spin past the gyro's top, from the wobble: ${f0(sp.wobble)} rpm (${kI}). The off-centre force says ${f0(sp.force)} rpm - the sensor's radius (${mm}) may be off.`
@@ -1183,7 +1246,8 @@ const now = () => performance.now();
 requestAnimationFrame(frame);
 
 // ================================================================ test hook (no hardware)
-window.disc3d = { onPacket, st, info, sendCmd, rp, throwsList, look, faceMe, enterReplay, exitReplay, rateNow, analyzeThrow, headingOffset: () => headingOffset };
+loadReplays();
+window.disc3d = { onPacket, st, info, sendCmd, rp, throwsList, look, faceMe, enterReplay, exitReplay, rateNow, analyzeThrow, showCap, loadReplays, headingOffset: () => headingOffset };
 </script>
 </body>
 </html>

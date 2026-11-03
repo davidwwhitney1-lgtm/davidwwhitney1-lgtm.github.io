@@ -10,13 +10,17 @@
 //    comes from the force fit when one shape fits clearly better.
 //  - the release: where the readings settle to the flight's steady force (the disc's own point can come early).
 //  - the flight's spin from the off-centre sensor's steady force when the gyro is maxed (w = sqrt(a / r)).
-//  - the speed, when both face axes were maxed for a long stretch of the pull (nothing measured the push there): from
-//    the air's drag in the first half second of flight, which the sensor reads in full and which grows with speed
-//    squared (airPush; the ratio is learned per disc from throws whose pull the sensor did see).
+//  - the speed, when the sensor maxed out for more than a moment of the pull (the fill for a maxed axis reads high or
+//    low with the pull's shape, up to +-26 mph): from the air's drag in the first half second of flight, which the
+//    sensor reads in full and which grows with speed squared (airPush; the ratio is learned per disc from throws whose
+//    pull the sensor did see). Within 2.5 mph on every simulated pull shape.
 //  - the chip's real clock (418.6/s, not 416), repeated samples, and the off-centre sensor's own spin force taken
 //    out of every reading (not once at the end).
-// 270 simulated throws (dtbuild/track/bench.js), the fast ones (45 mph and up): speed off by 1.7 mph typically (the
-// disc's maths: 14), 6 mph at the 90th percentile (29); direction 1.0 deg (6.3).
+//  - nose and hyzer on the disc's real axis (its angular momentum), not at one instant of the wobble: the axis circles
+//    that direction twice per spin, and the flight follows the middle of the circle.
+//  - the sensor's height above the disc's middle, read from the flight: a wobbling disc adds a force turning with the
+//    spin there (4 h w^2 tan(wobble), 1.9 g at 1000 rpm, 4 deg and 6 mm), which looks like a hit and hides the drag.
+// Simulated throws only (dtbuild/track/bench.js); no real throw has been checked against a reference yet.
 (function (G) {
 "use strict";
 const D2R = Math.PI / 180, R2D = 180 / Math.PI, GMS = 9.80665, TAU = 2 * Math.PI, MPH = 2.2369363;
@@ -37,8 +41,8 @@ const fromUp = (ax, ay, az) => {                            // as Quat::fromUpVe
   return wq < 1e-6 ? [0, 1, 0, 0] : qnorm([wq, ay, -ax, 0]);
 };
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-function sixFrom(q, v, ccw) {                               // the six numbers' angle definitions (throw_metrics.h)
-  const horiz = Math.hypot(v[0], v[1]), launch = Math.atan2(v[2], horiz) * R2D, n = qrot(q, [0, 0, 1]);
+function sixFrom(q, v, ccw, axis) {                         // the six numbers' angle definitions (throw_metrics.h)
+  const horiz = Math.hypot(v[0], v[1]), launch = Math.atan2(v[2], horiz) * R2D, n = axis || qrot(q, [0, 0, 1]);
   let hyzer, nose;
   if (horiz > 0.5) {
     const fx = v[0] / horiz, fy = v[1] / horiz, lx = -fy, ly = fx;
@@ -211,6 +215,13 @@ const median = arr => { const v = Array.from(arr).sort((x, y) => x - y), m = v.l
 // second) or 80 % of its fastest, whichever comes first. Returns -1 if nothing settles.
 function findRelease(ax, ay, az, gzDps, satG, clipX, clipY, trig, n) {
   const M = 12, T = 4 * GMS, TZ = 5 * GMS;
+  // The fall from the peak (gyro maxed): MS, the steady part's window (36, the firmware's releaseWin); PK, the peak's
+  // window (125 readings, 0.3 s: past the longest putt pull simulated, 0.28 s); the force must fall to FALL x its peak,
+  // or to FLOOR (the flight's own wobble and air force on a putt). On simulated putts the force at release was 0.03 of
+  // its peak and 0.24 or more of it in the last 30 readings of a pull that fades to nothing; 0.25 let 6 of 36 such
+  // putts go early; 0.15 held a putt's release back 21 readings into its flight and 3 drives' later still (400
+  // simulated throws, a third of them drives).
+  const MS = 36, PK = 125, FALL = 0.2, FLOOR = 1.2 * GMS;
   let top = 0; for (let k = 0; k < n; k++) top = Math.max(top, satG[k] ? 1e9 : Math.abs(gzDps[k]));
   const goal = Math.min(1800, 0.8 * top);
   let k0 = trig; for (let k = 0; k < n; k++) if (satG[k] || Math.abs(gzDps[k]) >= goal) { k0 = k; break; }
@@ -222,6 +233,20 @@ function findRelease(ax, ay, az, gzDps, satG, clipX, clipY, trig, n) {
     const mx = cx ? 0 : median(xs), my = cy ? 0 : median(ys), mz = median(zs);
     for (let j = 0; j < M; j++) if (Math.hypot(cx ? 0 : xs[j] - mx, cy ? 0 : ys[j] - my) > T || Math.abs(zs[j] - mz) > TZ) return false;
     if (cg && cg < M) return false;                          // the spin went past the gyro's top just now: still spinning up
+    if (cg === M && !rail) {
+      // The gyro is maxed, so its own test below can't show the spin-up still going on, and a slow putt's hand force
+      // (3 to 8 g, turning with the spin) can stay within 4 g of its middle for 12 readings mid-pull. So the force must
+      // also have fallen from its peak. It is the in-plane reading less the steady part (the off-centre sensor's spin
+      // force): the median over the next MS readings, as the firmware's releaseAt does (releaseWin, throw_metrics.h);
+      // 36 readings are over half a turn at any spin that maxes the gyro, so a turning pull averages out of the median
+      // and stays in the force. Not w^2 r: neither the spin nor the radius is known yet.
+      const e = Math.min(n, k + MS), sx = median(ax.subarray(k, e)), sy = median(ay.subarray(k, e));
+      const f = j => Math.hypot(ax[j] - sx, ay[j] - sy);
+      let peak = 0, now = 0;
+      for (let j = Math.max(0, k - PK); j < k; j++) peak = Math.max(peak, f(j));
+      for (let j = k; j < k + M; j++) now = Math.max(now, f(j));
+      if (now > Math.max(FALL * peak, FLOOR)) return false;
+    }
     if (!cg) {                                               // the gyro sees the spin: steady, one way
       let lo = 1e9, hi = 0, pos = 0;
       for (let j = k; j < k + M; j++) { const a = Math.abs(gzDps[j]); lo = Math.min(lo, a); hi = Math.max(hi, a); if (gzDps[j] > 0) pos++; }
@@ -249,32 +274,61 @@ function findRelease(ax, ay, az, gzDps, satG, clipX, clipY, trig, n) {
 // The end of the flight (the net, a catch, the ground), whichever shows first:
 // - the spin drops: below the gyro's top if it was maxed in flight, else under 85 % of the flight's, 3 readings running
 //   (a net or a hand stops the spin; wobble hardly touches this axis);
-// - a hit: a reading more than 4.5 g from the middle of the 12 just before it, arriving with a jump of 1.2 g or more
-//   between readings - or 9 g away on its own (a big wobble drifts the flight's readings slowly by several g, a hit
-//   is sudden).
+// - a hit: a reading more than 4.5 g from the middle of the readings just before it (up to 36: a full turn from about
+//   700 rpm, so forces turning with the spin aren't taken for a hit), arriving with a jump of 1.2 g or more between
+//   readings, and the spin then dropping within 40 readings;
+// - or a big hit: 12 g away with a jump of 3 g, spin or no spin (the ground can leave a disc spinning).
 function findImpact(ax, ay, az, gzDps, satG, rel, n) {
-  const M = 12, lim = 4.5 * GMS, jump = 1.2 * GMS, far = 9 * GMS;
+  const M = 12, W = 36, CONFIRM = 40, lim = 4.5 * GMS, jump = 1.2 * GMS, far = 12 * GMS, farJump = 3 * GMS;
   let spinEnd = n;
   if (rel + M < n) {
     let allSat = true; const lv = [];
     for (let k = rel + 2; k < rel + M; k++) { if (!satG[k]) allSat = false; lv.push(Math.abs(gzDps[k])); }
-    const level = median(lv);
+    const level = median(lv), spinKnown = allSat || level > 120;
     const low = k => allSat ? !satG[k] : Math.abs(gzDps[k]) < 0.85 * level;
-    if (allSat || level > 120) for (let k = rel + M; k + 2 < n; k++) if (low(k) && low(k + 1) && low(k + 2)) { spinEnd = k; break; }
-  }
-  for (let k = rel + M; k < Math.min(n, spinEnd); k++) {
-    const mx = median(ax.subarray(k - M, k)), my = median(ay.subarray(k - M, k)), mz = median(az.subarray(k - M, k));
-    const d = Math.max(Math.hypot(ax[k] - mx, ay[k] - my), Math.abs(az[k] - mz));
-    if (d > far) return k;
-    if (d > lim) {
+    if (spinKnown) for (let k = rel + M; k + 2 < n; k++) if (low(k) && low(k + 1) && low(k + 2)) { spinEnd = k; break; }
+    for (let k = rel + M; k < Math.min(n, spinEnd); k++) {
+      const m = Math.min(W, k - rel - 2), a = k - m;
+      const mx = median(ax.subarray(a, k)), my = median(ay.subarray(a, k)), mz = median(az.subarray(a, k));
+      const d = Math.max(Math.hypot(ax[k] - mx, ay[k] - my), Math.abs(az[k] - mz));
+      if (d <= lim) continue;
       let j = 0; for (let i = k - 2; i <= k; i++) j = Math.max(j, Math.hypot(ax[i] - ax[i - 1], ay[i] - ay[i - 1], az[i] - az[i - 1]));
-      if (j >= jump) return k;
+      if (d > far && j >= farJump) return k;
+      if (j >= jump && (!spinKnown || spinEnd <= k + CONFIRM || k + CONFIRM >= n)) return k;
     }
   }
   return spinEnd;
 }
+// The same end-of-flight rule, one reading at a time, for a flight that is still going (the page watching for the
+// landing, and a flight read back from the disc's memory). Counts in g and deg/s. The spin is compared with the
+// readings just before the hit, since a long flight slows by itself. feed() returns the hit's index once it is sure.
+class LandingWatch {
+  constructor(alsb, glsb, gzBias = 0) { this.al = alsb; this.gl = glsb; this.bz = gzBias; this.h = []; this.wait = null; }
+  feed(c, i) {
+    const a = [c[3] * this.al, c[4] * this.al, c[5] * this.al], sat = Math.abs(c[2]) >= GSAT, gz = Math.abs(c[2] * this.gl - this.bz), H = this.h;
+    let hit = null;
+    if (this.wait) {                                       // a hit is waiting for the spin to drop
+      const w = this.wait, low = w.allSat ? !sat : gz < 0.85 * w.level;
+      w.run = low ? w.run + 1 : 0;
+      if (w.run >= 3) { hit = w.at; this.wait = null; }
+      else if (i > w.at + 40) this.wait = null;
+    } else if (H.length >= 12) {
+      const m = [0, 1, 2].map(j => median(H.map(x => x.a[j]))), d = Math.max(Math.hypot(a[0] - m[0], a[1] - m[1]), Math.abs(a[2] - m[2]));
+      if (d > 4.5) {
+        let jmp = 0, p = a; for (let q = H.length - 1; q >= H.length - 3; q--) { jmp = Math.max(jmp, Math.hypot(p[0] - H[q].a[0], p[1] - H[q].a[1], p[2] - H[q].a[2])); p = H[q].a; }
+        if (d > 12 && jmp >= 3) hit = i;
+        else if (jmp >= 1.2) {
+          const allSat = H.every(x => x.sat), level = median(H.map(x => x.gz));
+          if (allSat || level > 120) this.wait = { at: i, allSat, level, run: 0 }; else hit = i;
+        }
+      }
+    }
+    H.push({ a, sat, gz }); if (H.length > 36) H.shift();
+    return hit;
+  }
+}
 // A wobbling disc's in-plane turning rate (gyro x and y, which don't max out) turns round, in the disc's own axes, at
-// (I3 - I1) / I1 x its spin - about 0.93 x for a golf disc, whose axial moment of inertia is ~1.93 x its cross one -
+// (I3 - I1) / I1 x its spin - about 0.99 x for a golf disc (shapes in Giljarhus et al. 2022: I3 / I1 = 1.988 and 1.991) -
 // whatever the spin, so it measures the spin while the gyro's spin axis is maxed. Its rate of change turns the same
 // way round zero, so the angle of that, unwrapped, against time gives the rate without needing the circle's centre
 // (which a sensor a degree off the spin axis shifts). Returns {w (rad/s), n, rms (rad), mag, turns} or null.
@@ -351,8 +405,10 @@ function airPush(ax, ay, lever, wz, okX, okY, k0, k1, kRel, dt) {
 // ---------------------------------------------------------------- the whole throw
 // S: raw counts (n x 6, disc axes) of a capture; I: {alsb, glsb, bias (disc axes, deg/s), radius (m), rate (measured,
 // samples/s) or odr}; o: {iRel (release index - the disc's own), spinRpm (the disc's flight spin, for the gyro's
-// maxed stretch), trig (trigger index, default 415), old (true = the disc's current maths, for comparison),
-// dragAt (readings with both face axes maxed from which the drag speed is used, default 6)}. I.kAero: this disc's
+// maxed stretch), trig (trigger index, default 415), old (true = the disc's maths on the readings as the sensor
+// read them, for comparison: the 416/s clock, the disc's release, maxed readings left at the sensor's top and its
+// spin force taken out once at release; not the disc's current firmware, which has changed since),
+// dragAt (maxed readings in the pull from which the drag speed is used, default 6)}. I.kAero: this disc's
 // drag ratio (learned(disc).kAero), 0 = not known yet.
 function reconstruct(S, I, o = {}) {
   const n = S.length / 6, old = !!o.old, info0 = {};
@@ -393,7 +449,51 @@ function reconstruct(S, I, o = {}) {
     const k = findRelease(ax, ay, az, gzDps, satG, clipX, clipY, trig, n);
     if (k >= 40) { iRel = k; info0.relSrc = "settled"; }
   }
-  const iImp = old ? n : findImpact(ax, ay, az, Float64Array.from(gz, v => v - I.bias[2]), satG, iRel, n);
+  // ---- the sensor's height h above the disc's middle. In flight a wobbling disc adds h (1 + 1/k) (alpha_y, -alpha_x) to
+  // the in-plane force (Euler's equations turn wz wx into alpha_y / k), alpha from the gyro's x and y. It turns with the
+  // spin, and it is large: taken from this flight by least squares (drag turns the other way, so it doesn't get in),
+  // else what earlier throws said.
+  const alx = new Float64Array(n), aly = new Float64Array(n);
+  const satXY = k => Math.abs(S[k * 6]) >= GSAT || Math.abs(S[k * 6 + 1]) >= GSAT;
+  for (let k = 0; k < n; k++) {
+    const a = Math.max(0, k - 2), b = Math.min(n - 1, k + 2);
+    if (old || satXY(a) || satXY(b)) continue;
+    alx[k] = (gx[b] - gx[a]) * D2R / ((b - a) * dt); aly[k] = (gy[b] - gy[a]) * D2R / ((b - a) * dt);
+  }
+  let hS = 0;
+  if (!old) {
+    const kk = 1 + 1 / (I.kI > 0.5 && I.kI < 1.1 ? I.kI : 0.99), a = Math.min(n, iRel + 8), xs = [], ys = [];
+    // only while the disc flies free: stopped by a hit, its in-plane rates and force have nothing to do with h
+    const gzAbs = Float64Array.from(gz, v => Math.abs(v - I.bias[2]));
+    let b = Math.min(n, a + 200);
+    for (let k = a + 2; k < b; k++) { const lv = gzAbs[a]; if (satG[a] ? !satG[k] : gzAbs[k] < 0.85 * lv) { b = Math.max(a, k - 25); break; } }
+    for (let k = a; k < b; k++) if (!clipX[k] && !clipY[k]) { xs.push(ax[k]); ys.push(ay[k]); }
+    if (xs.length >= 30) {
+      const mx = median(xs), my = median(ys);
+      let keep = 8 * GMS, h = 0, sx = 0, sxy = 0, see = 0, cnt = 0;
+      for (let pass = 0; pass < 3; pass++) {               // readings far from the fit (a hit) don't count
+        sxy = 0; sx = 0; see = 0; cnt = 0;
+        for (let k = a; k < b; k++) {
+          if (clipX[k] || clipY[k] || satXY(k)) continue;
+          const bx = kk * aly[k], by = -kk * alx[k], ex = ax[k] - mx, ey = ay[k] - my;
+          if (Math.hypot(ex - h * bx, ey - h * by) > keep) continue;
+          sxy += bx * ex + by * ey; sx += bx * bx + by * by; see += ex * ex + ey * ey; cnt++;
+        }
+        h = sx > 0 ? sxy / sx : 0; keep = 4 * GMS;
+      }
+      // enough wobble to read it (2 alpha at least 200 rad/s^2: 1 m/s^2 at 5 mm), and it has to explain the readings
+      if (cnt >= 30 && sx / cnt > 200 * 200 && Math.abs(h) < 0.02 && sxy * h > 0.3 * see) info0.hObs = h;
+    }
+    hS = info0.hObs !== undefined ? info0.hObs : (Math.abs(I.h) < 0.03 ? I.h || 0 : 0);
+    info0.h = hS;
+  }
+  // the end of the flight, on readings with that force taken out
+  const axF = Float64Array.from(ax), ayF = Float64Array.from(ay);
+  if (hS) {
+    const c = hS * (1 + 1 / (I.kI > 0.5 && I.kI < 1.1 ? I.kI : 0.99));
+    for (let k = iRel; k < n; k++) { if (!clipX[k]) axF[k] -= c * aly[k]; if (!clipY[k]) ayF[k] += c * alx[k]; }
+  }
+  const iImp = old ? n : findImpact(axF, ayF, az, Float64Array.from(gz, v => v - I.bias[2]), satG, iRel, n);
   info0.iImp = iImp;
   // the longest run of lost readings (repeats) around the pull: a few in a row leave the force fit with no data there,
   // so the pages don't rebuild or learn from such a throw
@@ -401,7 +501,10 @@ function reconstruct(S, I, o = {}) {
   for (let k = Math.max(1, trig - 60); k < Math.min(n, iRel + 60); k++) { run = dup[k] ? run + 1 : 0; if (run > info0.longestGap) info0.longestGap = run; }
   // ---- 1. the still moment before the throw: "down" and the gyro's zero error (as the disc does)
   const win = Math.floor(0.15 / dt);
-  let bias = I.bias.slice(), iStart = 0, q0 = null;
+  let bias = I.bias.slice(), iStart = 0, q0 = null, gRef = GMS;
+  // the disc's own limit on a new zero error (info packet): 0 = its stored value is unknown, so take what this still
+  // moment says (real chips are off by ~2.7 deg/s)
+  const biasTol = I.biasTol === undefined ? 1.5 : I.biasTol;
   for (let i = 0; i + win < iRel - win; i++) {
     let still = true; const m = [0, 0, 0, 0, 0, 0];
     for (let k = i; k < i + win; k++) {
@@ -410,9 +513,10 @@ function reconstruct(S, I, o = {}) {
     }
     if (!still) continue;
     q0 = fromUp(m[0], m[1], m[2]);
+    gRef = Math.hypot(m[0], m[1], m[2]) / win;             // gravity as this chip reads it (1.04 g on one flat): its offset then adds nothing up
     const b = [m[3] / win, m[4] / win, m[5] / win];
-    if (Math.hypot(b[0] - bias[0], b[1] - bias[1], b[2] - bias[2]) <= 1.5) bias = b;
-    iStart = i + win; break;
+    if (biasTol <= 0 || Math.hypot(b[0] - bias[0], b[1] - bias[1], b[2] - bias[2]) <= biasTol) bias = b;
+    iStart = i + win; info0.still = true; break;
   }
   if (!q0) {                                               // never still: the quietest 0.1 s before the throw
     const w2 = Math.max(8, Math.floor(0.10 / dt)); let best = 1e9, bi = 0;
@@ -430,7 +534,7 @@ function reconstruct(S, I, o = {}) {
   // wobble's turning rate (turnRate) over kI = (I3 - I1) / I1, and the off-centre sensor's steady force
   // |c| = (w^2 + wp^2 / 2) r with a calibrated radius r (wp: the wobble's own rate) - weighed together when both are
   // there. Last resort: the disc's own number (o.spinRpm), else the gyro's top.
-  const kI = I.kI > 0.5 && I.kI < 1.1 ? I.kI : 0.93, gTopXY = 32767 * GL * D2R;
+  const kI = I.kI > 0.5 && I.kI < 1.1 ? I.kI : 0.99, gTopXY = 32767 * GL * D2R;
   const f0 = Math.min(n - 1, iRel + 4), f1 = Math.max(f0, Math.min(n, iImp - 3));
   let fSum = 0, fSat = 0; for (let k = f0; k < f1; k++) { fSum += wz[k]; fSat += satG[k]; }
   const fN = f1 - f0, sgn = fSum < 0 ? -1 : 1;
@@ -478,7 +582,8 @@ function reconstruct(S, I, o = {}) {
   // spin direction (counter-clockwise seen from above = positive) and the wobble as the disc defines it (TechDisc's
   // cone half-angle): atan(the in-plane rotation about its middle / (2 x spin))
   info0.ccw = sgn > 0;
-  info0.wobble = spin.wDev != null && Math.abs(wFlight) > 1 ? Math.atan(spin.wDev / (2 * Math.abs(wFlight))) * R2D : null;
+  // (with only a floor for the spin, it would read high by the real spin over the floor: unknown instead)
+  info0.wobble = spin.wDev != null && Math.abs(wFlight) > 1 && !spin.atLeast ? Math.atan(spin.wDev / ((1 + kI) * Math.abs(wFlight))) * R2D : null;
   // Where the gyro is maxed: a curve that only rises, from its last reading to the flight's spin at release. Hermite
   // (the last reading's rate of change in, level at release) unless step 4 finds a shape that fits the pull's force
   // (which turns in the disc's axes as the disc spins) clearly better - by 30 % or more; smaller wins are noise.
@@ -499,20 +604,20 @@ function reconstruct(S, I, o = {}) {
   };
   setRamp(hermite);
   // ---- 3. where the sensor sits: off the axis by r, toward minus the flight's steady force; its size from the
-  // calibration, else from this throw (the steady force over the spin squared)
-  let r = [0, 0, 0];
+  // calibration, else from this throw (the steady force over the spin squared); and h above the disc's middle
+  let r = [0, 0, hS];
   if (spin.c && Math.abs(wFlight) > 5) {
     const [cx, cy] = spin.c, m = Math.hypot(cx, cy);
     const rm = I.radius > 0.0005 ? I.radius : spin.radius || m / (wFlight * wFlight + (spin.wp || 0) ** 2 / 2);
-    if (m > 1e-3 && rm < 0.03) r = [-cx / m * rm, -cy / m * rm, 0];
+    if (m > 1e-3 && rm < 0.03) r = [-cx / m * rm, -cy / m * rm, hS];
   }
   const lever = k => {                                     // the sensor's own spin force: alpha x r + w x (w x r)
     const w = [(gx[k] - bias[0]) * D2R, (gy[k] - bias[1]) * D2R, wz[k]];
-    return cross([0, 0, alz[k]], r).map((v, i) => v + cross(w, cross(w, r))[i]);
+    return cross([alx[k], aly[k], alz[k]], r).map((v, i) => v + cross(w, cross(w, r))[i]);
   };
   // ---- 4. the pull's force through the readings the accelerometer cut off
   const fx = Float64Array.from(ax), fy = Float64Array.from(ay), fz = Float64Array.from(az);
-  const info = Object.assign(info0, { clippedA: 0, clippedG: 0, filled: 0 });
+  const info = Object.assign(info0, { clippedA: 0, clippedG: 0, filled: 0, bothRun: 0, underDetermined: false });
   for (let k = iStart; k <= iRel; k++) { if (clipX[k] || clipY[k] || clipZ[k]) info.clippedA++; if (satG[k]) info.clippedG++; }
   if (!old) {
     let a0 = -1;
@@ -547,6 +652,12 @@ function reconstruct(S, I, o = {}) {
         if (clipY[k] || dup[k]) { fy[k] = fit.model(k, 1); }
       }
       info.fitWindow = [w0, w1]; info.fit = fit; info.th = best.th;
+      // Under-determined: a stretch of the pull with no clear reading on either face axis (both maxed, or lost) long
+      // enough that a knot of the fit has none beside it (2 dk - 1 readings). There only the smoothing and "16 g or
+      // more" hold the push's size, so the fill (and the speed from it) is a guess; the pages say so.
+      let blind = 0;
+      for (let k = w0; k <= Math.min(iRel, w1 - 1); k++) { blind = (clipX[k] && clipY[k]) || dup[k] ? blind + 1 : 0; info.bothRun = Math.max(info.bothRun, blind); }
+      info.underDetermined = info.bothRun >= 2 * (o.dk || 5) - 1;
     }
   }
   // ---- 5. add it up: attitude from the gyro, velocity from the force (minus the sensor's spin force), in world axes
@@ -558,13 +669,13 @@ function reconstruct(S, I, o = {}) {
     let f = [fx[k], fy[k], fz[k]];
     if (!old) { const L = lever(k); f = [f[0] - L[0], f[1] - L[1], f[2] - L[2]]; }
     const aw = qrot(q, f);
-    v = [v[0] + aw[0] * dt, v[1] + aw[1] * dt, v[2] + (aw[2] - GMS) * dt];
+    v = [v[0] + aw[0] * dt, v[1] + aw[1] * dt, v[2] + (aw[2] - gRef) * dt];
     p = [p[0] + v[0] * dt, p[1] + v[1] * dt, p[2] + v[2] * dt];
     path.push(p.slice()); att.push(q.slice()); vel.push(v.slice());
     if (k === iRel) info.rel = { q: q.slice(), v: v.slice(), p: p.slice() };
   }
   let vr = info.rel.v.slice();
-  if (old && r[0] + r[1] !== 0) {                          // the disc's own lever-arm correction, once, at release
+  if (old && r[0] + r[1] !== 0) {                          // the "old" maths' lever-arm correction, once, at release
     const w = sgn * Math.abs(wFlight), c = qrot(info.rel.q, [-w * r[1], w * r[0], 0]);
     vr = [vr[0] - c[0], vr[1] - c[1], vr[2] - c[2]];
   }
@@ -572,7 +683,7 @@ function reconstruct(S, I, o = {}) {
   info.speedSrc = "pull";
   if (!old) {
     let both = 0; for (let k = iStart; k <= iRel; k++) if (clipX[k] && clipY[k]) both++;
-    info.bothStuck = both;
+    info.bothStuck = both;                                   // (the drag ratio is learned only from throws with none)
     const okX = Uint8Array.from({ length: n }, (_, k) => dup[k] || clipX[k] ? 0 : 1), okY = Uint8Array.from({ length: n }, (_, k) => dup[k] || clipY[k] ? 0 : 1);
     const a0 = Math.min(n - 1, iRel + 8), a1 = Math.min(n, iImp - 4, iRel + Math.round(0.5 / dt));
     const air = a1 - a0 >= 30 ? airPush(ax, ay, lever, wz, okX, okY, a0, a1, iRel, dt) : null;
@@ -581,7 +692,7 @@ function reconstruct(S, I, o = {}) {
       air.vPull = vPull; air.kObs = air.D0 / (vPull * vPull || 1);     // worth learning when the pull was seen in full
       if (I.kAero > 0 && air.good) air.vDrag = Math.sqrt(air.D0 / I.kAero);
       info.air = air;
-      if (air.vDrag && both >= (o.dragAt ?? 6) && vPull > 1) {
+      if (air.vDrag && info.clippedA >= (o.dragAt ?? 6) && vPull > 1) {
         const f = air.vDrag / vPull;
         info.speedSrc = "drag"; info.speedScale = f; info.speedPull = vPull;
         // the pull's speed curve scaled to it; the flight after release keeps its own changes; the path re-added
@@ -597,7 +708,28 @@ function reconstruct(S, I, o = {}) {
       }
     }
   }
-  const six = Object.assign(sixFrom(info.rel.q, vr, sgn > 0), { spin: Math.abs(wFlight) * 60 / TAU, heading: relHeading(q0, vr) });
+  // Nose and hyzer on the disc's real axis. A wobbling disc's axis circles its angular momentum twice per spin, and the
+  // flight follows the middle of that circle; the attitude at one reading is somewhere on the circle, up to the whole
+  // wobble off. L = I1 (wx, wy) + I3 wz in the disc's axes, from the first readings of flight, turned into world axes by
+  // the attitude and averaged. It needs a spin that was measured: with only a floor, the attitude's own reading.
+  let axis = null;
+  if (!old && !spin.atLeast && Math.abs(wFlight) > 10) {
+    const ratio = 1 + kI, a0 = Math.min(n - 1, iRel + 3), a1 = Math.min(n, iImp - 2, iRel + 60), L = [0, 0, 0]; let cnt = 0;
+    for (let k = a0; k < a1; k++) {
+      if (satXY(k) || !att[k - iStart]) continue;
+      const wx = (gx[k] - bias[0]) * D2R, wy = (gy[k] - bias[1]) * D2R, m = Math.hypot(wx, wy, ratio * wz[k]), sg = wz[k] < 0 ? -1 : 1;
+      const nk = qrot(att[k - iStart], [sg * wx / m, sg * wy / m, sg * ratio * wz[k] / m]);
+      L[0] += nk[0]; L[1] += nk[1]; L[2] += nk[2]; cnt++;
+    }
+    const lm = Math.hypot(L[0], L[1], L[2]);
+    if (cnt >= 6 && lm > 0.5 * cnt) {
+      axis = [L[0] / lm, L[1] / lm, L[2] / lm];
+      const n0 = qrot(info.rel.q, [0, 0, 1]); info.axisOff = Math.acos(Math.min(1, n0[0] * axis[0] + n0[1] * axis[1] + n0[2] * axis[2])) * R2D;
+      if (info.axisOff > 30) axis = null;                   // more than any wobble: something else is wrong
+    }
+  }
+  const six = Object.assign(sixFrom(info.rel.q, vr, sgn > 0, axis), { spin: Math.abs(wFlight) * 60 / TAU, heading: relHeading(q0, vr) });
+  info.axis = axis;
   return { six, info: Object.assign(info, { iStart, iRel, r, dt }), path, att, vel, q0, iStart, wz, fx, fy, fz };
 }
 
@@ -605,44 +737,64 @@ function reconstruct(S, I, o = {}) {
 // Throws the gyro can still follow (under 382 rpm) show how fast this disc's wobble turns for its spin (kI, its shape)
 // and how far off the axis the sensor sits - kept in this browser (shared by the pages) for the fast throws the gyro
 // can't follow. Only complete, real throws teach (learnWorthy), each once (by id); the middle value of the last 15 is used.
-const LEARN_KEY = "disc3d.learn.v1";
+// Kept per tracker (the browser's id for the Bluetooth device, "" = not known): a radius and a height depend on how a
+// board is mounted, so one tracker's mustn't carry over to another. What the old shared store held stays under "".
+const LEARN_KEY = "disc3d.learn.v2", LEARN_OLD = "disc3d.learn.v1";
 const nums = a => Array.isArray(a) ? a.filter(x => typeof x === "number" && isFinite(x)) : [];
-function learnRead() {
+const cleanOne = o => {
+  const ka = {}; if (o && o.ka && typeof o.ka === "object") for (const [d, v] of Object.entries(o.ka)) ka[d] = nums(v);
+  return { kI: nums(o && o.kI), r: nums(o && o.r), h: nums(o && o.h), ka, ids: o && Array.isArray(o.ids) ? o.ids.filter(x => typeof x === "string") : [] };
+};
+function learnAll() {
   try {
-    const o = JSON.parse(localStorage.getItem(LEARN_KEY)) || {};
-    const ka = {}; if (o.ka && typeof o.ka === "object") for (const [d, v] of Object.entries(o.ka)) ka[d] = nums(v);
-    return { kI: nums(o.kI), r: nums(o.r), ka, ids: Array.isArray(o.ids) ? o.ids.filter(x => typeof x === "string") : [] };
-  } catch { return { kI: [], r: [], ka: {}, ids: [] }; }
+    const o = JSON.parse(localStorage.getItem(LEARN_KEY));
+    if (o && typeof o === "object") return o;
+    const old = JSON.parse(localStorage.getItem(LEARN_OLD));
+    return old ? { "": old } : {};
+  } catch { return {}; }
 }
+const learnRead = tracker => cleanOne(learnAll()[tracker || ""]);
 // disc: the disc's name - the drag ratio depends on the mould, so it is kept per disc ("" = not named)
-function learned(disc = "") {
-  const L = learnRead(), ka = L.ka[disc] || [];
-  return { kI: L.kI.length >= 2 ? median(L.kI) : 0, radius: L.r.length >= 2 ? median(L.r) : 0, nKI: L.kI.length, nR: L.r.length,
-           kAero: ka.length >= 3 ? median(ka) : 0, nKA: ka.length, needKA: 3 };
+function learned(disc = "", tracker = "") {
+  const L = learnRead(tracker), ka = L.ka[disc] || [];
+  return { kI: L.kI.length >= 2 ? median(L.kI) : 0, radius: L.r.length >= 2 ? median(L.r) : 0, h: L.h.length >= 2 ? median(L.h) : 0, nKI: L.kI.length, nR: L.r.length, nH: L.h.length,
+           kAero: ka.length >= 3 ? median(ka) : 0, nKA: ka.length, needKA: 3, discs: Object.keys(L.ka) };
+}
+// Forget what this tracker has taught (a re-mounted board), or only one disc's drag ratio.
+function learnReset(tracker = "", disc) {
+  try {
+    const all = learnAll();
+    if (disc !== undefined) { if (all[tracker || ""] && all[tracker || ""].ka) delete all[tracker || ""].ka[disc]; }
+    else delete all[tracker || ""];
+    localStorage.setItem(LEARN_KEY, JSON.stringify(all));
+    return true;
+  } catch { return false; }
 }
 // c: the disc's results packet (counted, n, res[1] spin, res[6] peak); r: reconstruct's result
 const learnWorthy = (c, r) => !!r && c.n >= 445 && (c.counted || (c.res[6] >= 4 && c.res[1] >= 120)) && Math.abs(r.six.spin) >= 120 &&
   r.info.relSrc === "settled" && !(r.info.longestGap > 3);
 // The drag ratio is learned only from throws whose pull the sensor saw (never both face axes maxed) with a clean drag
 // reading, at a speed where drag is well above the noise.
-function teach(id, c, r, disc = "") {
+function teach(id, c, r, disc = "", tracker = "") {
   if (!learnWorthy(c, r)) return false;
-  const sp = r.info.spin || {}, a = r.info.air;
-  const okKI = sp.kIObs > 0.8 && sp.kIObs < 1.02, okR = sp.radiusObs > 0.002 && sp.radiusObs < 0.025;
-  const okKA = !!a && a.good && r.info.bothStuck === 0 && r.info.speedSrc === "pull" && a.vPull > 9 && a.kObs > 0.004 && a.kObs < 0.08;
-  if (!okKI && !okR && !okKA) return false;
+  const sp = r.info.spin || {}, a = r.info.air, hObs = r.info.hObs;
+  const okKI = sp.kIObs > 0.8 && sp.kIObs < 1.02, okR = sp.radiusObs > 0.002 && sp.radiusObs < 0.025, okH = Math.abs(hObs) < 0.02;
+  const okKA = !!a && a.good && r.info.bothStuck === 0 && r.info.speedSrc === "pull" && a.vPull > 9 && a.kObs > 0.003 && a.kObs < 0.08;
+  if (!okKI && !okR && !okKA && !okH) return false;
   try {
-    const L = learnRead(); if (L.ids.includes(id)) return false;
+    const all = learnAll(), L = cleanOne(all[tracker || ""]); if (L.ids.includes(id)) return false;
     if (okKI) L.kI.push(+sp.kIObs.toFixed(4));
     if (okR) L.r.push(+sp.radiusObs.toFixed(5));
+    if (okH) L.h.push(+hObs.toFixed(5));
     if (okKA) { const v = L.ka[disc] || (L.ka[disc] = []); v.push(+a.kObs.toFixed(6)); if (v.length > 15) v.splice(0, v.length - 15); }
     L.ids.push(id);
-    for (const [k, m] of [["kI", 15], ["r", 15], ["ids", 200]]) if (L[k].length > m) L[k].splice(0, L[k].length - m);
-    localStorage.setItem(LEARN_KEY, JSON.stringify(L));
+    for (const [k, m] of [["kI", 15], ["r", 15], ["h", 15], ["ids", 200]]) if (L[k].length > m) L[k].splice(0, L[k].length - m);
+    all[tracker || ""] = L;
+    localStorage.setItem(LEARN_KEY, JSON.stringify(all));
     return true;
   } catch { return false; }
 }
 
-G.DiscTrack = { reconstruct, sixFrom, relHeading, fitPullForce, fitPolar, airPush, findRelease, findImpact, turnRate, median,
-                learned, teach, learnWorthy };
+G.DiscTrack = { reconstruct, sixFrom, relHeading, fitPullForce, fitPolar, airPush, findRelease, findImpact, LandingWatch, turnRate, median,
+                learned, teach, learnWorthy, learnReset };
 })(typeof window !== "undefined" ? window : globalThis);

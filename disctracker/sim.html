@@ -366,6 +366,8 @@
       <span id="lgCount"></span>
       <button class="small" id="lgCsv" title="Your labels next to the disc's numbers, one row per throw">Export log (Excel)</button>
       <button class="small" id="lgJson" title="Everything including the raw readings, for re-tuning the calculations">Data file</button></div>
+    <div class="lp-bar"><label title="Work out older throws again with the newest firmware's analysis, to see what the update changes without updating the disc"><input type="checkbox" id="lpRules"> Use the newer analysis rules (version 7)</label>
+      <span id="lpRulesNote" style="color:var(--warn)" hidden>These numbers use newer analysis rules than the disc that recorded this throw.</span></div>
     <div class="lp-break-body"><div class="cvwrap"><canvas id="lpBreak"></canvas></div>
       <ol id="lpSteps"><li>Throw the disc – every step of the calculation, with its numbers, shows up here.</li></ol></div>
   </section>
@@ -394,8 +396,8 @@
   </aside>
 </div>
 
-<script src="flight.js?v=2026-10-21b"></script>
-<script src="track.js?v=2026-10-28"></script>
+<script src="flight.js?v=2026-11-01"></script>
+<script src="track.js?v=2026-11-01b"></script>
 <script type="module">
 import * as THREE from "three";
 import { Line2 } from "three/addons/lines/Line2.js";
@@ -584,7 +586,7 @@ function parseSummary(dv) {
     flags: dv.getUint8(1), seq: dv.getUint16(2, true), boot: dv.getUint16(4, true),
     speed: dv.getUint16(6, true) / 10, spin: dv.getUint16(8, true), hyzer: dv.getInt16(10, true) / 10,
     nose: dv.getInt16(12, true) / 10, launch: dv.getInt16(14, true) / 10, wobble: dv.getUint16(16, true) / 10,
-    peak: dv.getUint8(18) / 4, ccw: !!(dv.getUint8(1) & 128), spinSrc: b19 & 0x7f, wobbleOld: !(b19 & 0x80),
+    peak: dv.getUint8(18) / 4, ccw: !!(dv.getUint8(1) & 128), spinSrc: b19 & 0x3f, lowConf: !!(b19 & 0x40), wobbleOld: !(b19 & 0x80),
   };
   if (t.wobbleOld) { t.wobbleRaw = t.wobble; t.wobble = wobbleFromRateAngle(t.wobble); }   // older firmware: ~2x
   return t;
@@ -726,6 +728,7 @@ function parseInfo(dv) {
   if (len >= 120) Object.assign(I, { calSeq: dv.getUint32(108, true), calFlags: dv.getUint16(112, true), tempCdeg: tc, tempC: tc ? tc / 100 : null,
     prePeak: dv.getUint16(116, true), steadyN: dv.getUint8(118), biasTol: dv.getUint8(119) / 10 });
   else Object.assign(I, { calSeq: 0, calFlags: null, tempCdeg: 0, tempC: null, prePeak: 208, steadyN: 20, biasTol: 1.5 });
+  I.rateHz = len >= 124 ? dv.getFloat32(120, true) : 0;     // firmware v6: this chip's measured samples per second
   return I;
 }
 // Info packets come every 10 s and after every change. v4 firmware sends one as soon as a counted throw has
@@ -933,6 +936,12 @@ class Q4 {
     this.w += -h * (x * wx + y * wy + z * wz); this.x += h * (w * wx + y * wz - z * wy);
     this.y += h * (w * wy - x * wz + z * wx); this.z += h * (w * wz + x * wy - y * wx); this.norm();
   }
+  exact(wx, wy, wz, dt) {                         // firmware log version 6: the exact rotation for the step
+    const m = Math.hypot(wx, wy, wz); if (m < 1e-6) return;
+    const a = 0.5 * m * dt, c = Math.cos(a), k = Math.sin(a) / m, qx = wx * k, qy = wy * k, qz = wz * k, { w, x, y, z } = this;
+    this.w = w * c - x * qx - y * qy - z * qz; this.x = w * qx + x * c + y * qz - z * qy;
+    this.y = w * qy - x * qz + y * c + z * qx; this.z = w * qz + x * qy - y * qx + z * c; this.norm();
+  }
   rot(bx, by, bz) {
     const { w, x, y, z } = this, tx = 2 * (y * bz - z * by), ty = 2 * (z * bx - x * bz), tz = 2 * (x * by - y * bx);
     return [bx + w * tx + (y * tz - z * ty), by + w * ty + (z * tx - x * tz), bz + w * tz + (x * ty - y * tx)];
@@ -1085,8 +1094,8 @@ function liveStep(k, I, dt) {
 }
 
 // Steps 6-7 of the disc's maths: speed, launch, hyzer and nose from the velocity and the disc's attitude at release.
-function discAngles(q, vx, vy, vz, ccw) {
-  const horiz = Math.hypot(vx, vy), launch = Math.atan2(vz, horiz) * R2D, [nx, ny, nz] = q.rot(0, 0, 1);
+function discAngles(q, vx, vy, vz, ccw, axis) {
+  const horiz = Math.hypot(vx, vy), launch = Math.atan2(vz, horiz) * R2D, [nx, ny, nz] = axis || q.rot(0, 0, 1);
   let hyzer, nose;
   if (horiz > 0.5) {                               // against the flight direction (left = up x forward)
     const fx = vx / horiz, fy = vy / horiz, lx = -fy, ly = fx;
@@ -1105,6 +1114,7 @@ function discAngles(q, vx, vy, vz, ccw) {
 // milliseconds). Standby or a calibration stops the count while the clock runs on, so a pair spanning one reads low:
 // only 405-430 counts, and the middle value once two agree within 0.3 %; until then 418.6, what this disc measured.
 function discRate(I, list = live.infos) {
+  if (I.rateHz > 400 && I.rateHz < 430) return I.rateHz;      // firmware v6 measures its own
   const mine = list.filter(x => x.boot === I.boot).sort((a, b) => a.millis - b.millis), rs = [];
   for (let i = 0; i < mine.length; i++) for (let j = i + 1; j < mine.length; j++) {
     const span = mine[j].millis - mine[i].millis; if (span < 8000) continue; if (span > 30000) break;
@@ -1115,15 +1125,16 @@ function discRate(I, list = live.infos) {
 }
 function rebuild(S, info, c) {
   if (!window.DiscTrack || !S || !info || c.n < 445) return null;
-  const L = DiscTrack.learned(settings.disc && settings.disc.name || "");
+  const L = DiscTrack.learned(settings.disc && settings.disc.name || "", device ? device.id : "");
   const I = { alsb: info.alsb, glsb: info.glsb, bias: info.bias, radius: info.radius > 0.0005 ? info.radius : L.radius, odr: info.odr,
-              rate: discRate(info), kI: L.kI || 0.93, kAero: L.kAero };
+              rate: discRate(info), kI: L.kI || 0.99, kAero: L.kAero, h: L.h, biasTol: info.biasTol };
   try {
     const r = DiscTrack.reconstruct(S, I, { iRel: c.rel < c.n ? c.rel : undefined, spinRpm: c.res[1] > 0 ? c.res[1] : undefined }), x = r.info;
     return { res: r, speed: r.six.speed, spin: r.six.spin, hyzer: r.six.hyzer, nose: r.six.nose, launch: r.six.launch, rel: x.iRel,
              relFound: x.relSrc === "settled", imp: x.iImp, spinSrc: x.spinSrc, atLeast: !!(x.spin && x.spin.atLeast), gap: x.longestGap,
              ccw: x.ccw, wobble: x.wobble, speedSrc: x.speedSrc, speedPull: x.speedPull ? x.speedPull * 2.2369363 : null,
-             iStart: r.iStart, wz: r.wz, vel: r.vel, fx: r.fx, fy: r.fy, fz: r.fz, fit: x.fitWindow || null, rate: 1 / x.dt };
+             iStart: r.iStart, wz: r.wz, vel: r.vel, fx: r.fx, fy: r.fy, fz: r.fz, fit: x.fitWindow || null, rate: 1 / x.dt,
+             underDetermined: !!x.underDetermined };
   } catch (err) { console.warn("rebuilding the throw failed", err); return null; }
 }
 // A throw's rebuild, worked out the first time something needs it: throws reloaded from the log wait until they are
@@ -1136,6 +1147,19 @@ const spinTxt = nw => `${nw.atLeast ? "≥ " : ""}${nw.spin.toFixed(0)} rpm`;
 // recording stops ~6 readings before the hit it found, so the rebuild also gets up to EXTRA of the stream's readings
 // after it. What slower throws teach about this disc (kI, the sensor's radius) is shared with the 3D page (track.js).
 const EXTRA = 160;
+// The newer-rules switch: ticked (or ?rules=7 in the address), a throw recorded by older firmware is analysed again
+// with the log-version-7 rules, so the firmware fixes can be compared on old recordings without a re-flash. It changes
+// only what this page shows. The raw file (tryCaps) and the throw log keep the analysis with the rules of the disc
+// that recorded the throw, because they store that disc's log version next to it.
+const NEW_RULES = 7;
+let newRules = false;
+try { newRules = new URLSearchParams(location.search).get("rules") === String(NEW_RULES); } catch {}
+// e.anOwn: the analysis with the recorded rules. e.an: the one on screen, the same unless the switch re-analysed it.
+function analyzeShown(e) {
+  e.an = e.anOwn; e.anNew = false;
+  if (!newRules || !e.S || !e.info || !(e.info.logVer < NEW_RULES)) return;
+  try { e.an = analyzeCapture(e.S, { ...e.info, logVer: NEW_RULES }); e.anNew = true; } catch (err) { console.warn("analysis with the newer rules failed", err); }
+}
 // A throw's results packet arrived: cut its samples out of the live buffer and redo the maths here, step by step.
 function liveTryCaps() {
   while (live.pendingCaps.length) {
@@ -1155,8 +1179,9 @@ function liveTryCaps() {
     let nx = c.n; while (nx < c.n + EXTRA && live.seqs[(c.start + nx) % LRING] === c.start + nx) nx++;
     const Sx = new Int16Array(nx * 6); Sx.set(S);
     for (let i = c.n; i < nx; i++) { const sl = (c.start + i) % LRING; Sx.set(live.ring.subarray(sl * 6, sl * 6 + 6), i * 6); }
-    const ent = { id: `${info.boot}-${c.start}-${c.tMs}`, c, S, Sx, an, nwPending: true, missing, at: Date.now(), info, label: null,
+    const ent = { id: `${info.boot}-${c.start}-${c.tMs}`, c, S, Sx, anOwn: an, nwPending: true, missing, at: Date.now(), info, label: null,
                   liveEst: rr ? { speed: rr.speed, launch: rr.launch, hyzer: rr.hyzer, nose: rr.nose } : null };
+    analyzeShown(ent);
     // v4: a spinless capture that ran to the 3 s limit is handling ("quiet": the disc raises no banner for it and
     // keeps no record of it unless the stream is on). It shows in the graphs and the list, but it does not take
     // over "the last throw" and is kept in the throw log only once it is labeled.
@@ -1170,7 +1195,7 @@ function liveTryCaps() {
     setTimeout(() => {
       try {
         ent.nwPending = false; const nw = nwOf(ent); ent.flight = capFlight(ent);
-        if (nw && !ent.quiet && missing <= 0.2 * c.n) try { DiscTrack.teach(ent.id, c, nw.res, settings.disc && settings.disc.name || ""); } catch (err) { console.warn("learning", err); }
+        if (nw && !ent.quiet && missing <= 0.2 * c.n) try { DiscTrack.teach(ent.id, c, nw.res, settings.disc && settings.disc.name || "", device ? device.id : ""); } catch (err) { console.warn("learning", err); }
         if (rebuilding() && !ent.quiet) {
           if (c.counted) { held.caps.push({ ent, at: performance.now() }); matchHeld(); setTimeout(matchHeld, HOLD_CAP + 50); }
           else if (clearThrow(nw)) { const e = addThrow(throwFrom(null, ent), false); if (e) play(e, true); }
@@ -1189,12 +1214,110 @@ function liveTryCaps() {
 // ---- the disc's analysis (throw_metrics.h), in JavaScript, keeping every intermediate step ----
 // A capture is analysed with the rules of the firmware that recorded it (I.logVer). Log version 4 changed the
 // release test, the pull's peak, the no-still-moment fallback, the per-throw gyro offset, the short-flight window
-// and the speed (lever arm); version 3 and older captures keep the version-3 rules exactly.
+// and the speed (lever arm); version 3 and older captures keep the version-3 rules exactly. Log version 7 adds the
+// fill of maxed in-plane accelerometer readings (fillAccel); version 6 and older captures keep their own rules.
 const FL = { VALID: 1, GYRO_Z_SAT: 2, ACCEL_SAT: 4, NO_RELEASE: 8, NO_STATIC: 16, SPIN_FROM_ACC: 32, SHORT_FLIGHT: 64, SPIN_CCW: 128,
-             SEED_RELAXED: 256, BIAS_KEPT: 512, LEVER_ARM: 1024, WAVE_REJECTED: 2048 };   // 256-2048: v4 diagnostics
+             SEED_RELAXED: 256, BIAS_KEPT: 512, LEVER_ARM: 1024, WAVE_REJECTED: 2048, LOW_CONF: 4096, GYRO_XY_SAT: 8192 };   // 256-2048: v4 diagnostics
+// v7: the maxed in-plane force, filled in. A mirror of throw_metrics.h step 5a (fillPrepare / fillAt): the same
+// anchors, in the same order, with the same tests (the why and the test numbers are in that comment).
+// Returns null (the v6 readings are added up) or { A, at }, where
+// at(i, th, w) gives the force to add up for reading i ([ax, ay], g), th = the spin angle so far (rad), w = gz (rad/s).
+function fillAccel(S, I, P, iStart, iRel, n, found, c0, wave, gzAt, dt) {
+  const SAT = 32200, AL = I.alsb, sat = v => v >= SAT || v <= -SAT, last = Math.min(iRel, n - 1), TAU = 2 * Math.PI;
+  if (!found || last <= iStart) return null;
+  let any = false;
+  for (let i = iStart; i <= last; i++) {
+    if (sat(S[i * 6 + 5])) return null;                             // z maxed too: filling x and y alone tilts it more
+    if (c0 < 0 && sat(S[i * 6 + 2])) return null;                   // spin angle not known
+    if (sat(S[i * 6 + 3]) || sat(S[i * 6 + 4])) any = true;
+  }
+  if (!any) return null;
+  const m = Math.hypot(wave.mx, wave.my), useC = P.locked && I.radius > 0.0005 && m > 1e-3;
+  const cxu = useC ? wave.mx / m * I.radius / GMS : 0, cyu = useC ? wave.my / m * I.radius / GMS : 0;   // g per (rad/s)²
+  const A = [], AMAX = 48, wrap = d => { while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU; return d; };
+  const turnsLike = (phi, ref) => phi + TAU * Math.round((ref - phi) / TAU);   // phi, moved by whole turns to sit near ref
+  const push = a => { if (A.length < AMAX && !(A.length && a.t <= A[A.length - 1].t)) A.push(a); };   // in time order only
+  // pass 1: anchors. kind 0: an in-range reading next to a maxed stretch; 1: a crossing (2+ readings); 2: one reading
+  let th = 0, pu = 0, pr = 0, inS = false, lc = null, run = null;
+  const close = () => {
+    if (!run) return;
+    const r = run; run = null;
+    if (r.n < 2) { push({ kind: 2, t: r.k0, psi: r.th0 + r.pu, M: NaN, r, floor: r.fl }); return; }
+    const sl = (r.d1 - r.d0) / (r.k1 - r.k0), t0 = Math.abs(sl) > 1e-6 ? r.k0 - r.d0 / sl : NaN;
+    if (!(t0 >= r.k0 - 1 && t0 <= r.k1 + 1)) return;               // did not pass zero here: not a crossing
+    const phi = turnsLike(r.ax ? (r.s > 0 ? 0 : Math.PI) : (r.s > 0 ? Math.PI / 2 : -Math.PI / 2), r.pu);
+    push({ kind: 1, t: t0, psi: r.th0 + (r.th1 - r.th0) * (t0 - r.k0) / (r.k1 - r.k0) + phi, M: NaN, sl,
+           wz: (r.th1 - r.th0) / ((r.k1 - r.k0) * dt), want: r.ax ? Math.sign(sl) * r.s : -Math.sign(sl) * r.s, floor: r.fl });
+  };
+  for (let i = iStart; i < last; i++) {                             // the release reading is flight: never an anchor
+    const w = gzAt(i) * D2R; th += w * dt;
+    const rx = S[i * 6 + 3] * AL, ry = S[i * 6 + 4] * AL, sx = sat(S[i * 6 + 3]), sy = sat(S[i * 6 + 4]);
+    const dx = rx - w * w * cxu, dy = ry - w * w * cyu, ph = Math.atan2(dy, dx);
+    pu = i === iStart ? ph : pu + wrap(ph - pr); pr = ph;
+    if (!sx && !sy) {
+      close();
+      const a = { kind: 0, t: i, psi: th + pu, M: Math.hypot(dx, dy) };
+      if (inS) { push(a); inS = false; }
+      lc = a; continue;
+    }
+    if (!inS) { inS = true; if (lc && lc.t === i - 1) push(lc); }
+    if (sx && sy) { close(); continue; }
+    const ax = sx ? 1 : 0, s = Math.sign(sx ? rx : ry), d = sx ? dy : dx, fl = Math.abs(sx ? rx : ry);
+    if (run && run.ax === ax && run.s === s) { run.k1 = i; run.d1 = d; run.th1 = th; run.n++; run.fl = Math.min(run.fl, fl); }
+    else { close(); run = { ax, s, k0: i, k1: i, d0: d, d1: d, th0: th, th1: th, n: 1, fl, pu }; }
+  }
+  close();
+  // crossing sizes: the clear axis passed zero at |slope| = M x (how fast the force turns against the disc), and that
+  // turn is the force's own turn (from the nearest anchors with a sure direction) minus the spin
+  const sure = j => A[j].kind !== 2;
+  for (let j = 0; j < A.length; j++) {
+    const a = A[j]; if (a.kind !== 1) continue;
+    let p = j - 1, q = j + 1;
+    while (p >= 0 && !sure(p)) p--; while (q < A.length && !sure(q)) q++;
+    const P0 = A[p >= 0 ? p : j], Q0 = A[q < A.length ? q : j];
+    if (!(Q0.t > P0.t)) continue;
+    const rel = (Q0.psi - P0.psi) / ((Q0.t - P0.t) * dt) - a.wz;
+    if (Math.sign(rel) === a.want && Math.abs(rel) * dt >= 0.005) a.M = Math.max(a.floor, Math.abs(a.sl) / (Math.abs(rel) * dt));
+  }
+  // the rest: size from the nearest known ones (interpolated, or held at the ends); a one-reading crossing then gets
+  // its exact direction from that size
+  const known = A.map(a => a.M === a.M);
+  for (let j = 0; j < A.length; j++) {
+    if (known[j]) continue;
+    let p = j - 1, q = j + 1;
+    while (p >= 0 && !known[p]) p--; while (q < A.length && !known[q]) q++;
+    if (p < 0 && q >= A.length) continue;
+    const a = A[j], M = p >= 0 && q < A.length ? A[p].M + (A[q].M - A[p].M) * (a.t - A[p].t) / (A[q].t - A[p].t) : A[p >= 0 ? p : q].M;
+    a.M = Math.max(a.floor, M);
+    if (a.kind === 2) {
+      const r = a.r, c = Math.max(-1, Math.min(1, r.d0 / a.M));
+      a.psi = r.th0 + turnsLike(r.ax ? (r.s > 0 ? Math.asin(c) : Math.PI - Math.asin(c)) : r.s * Math.acos(c), r.pu);
+    }
+  }
+  const V = A.filter(a => a.M === a.M);
+  if (V.length < 2) return null;
+  // pass 2 (in the add-up): size and direction interpolated between anchors, turned back, off-centre force added again
+  let j = 0;
+  const at = (i, th, w) => {
+    const rx = S[i * 6 + 3] * AL, ry = S[i * 6 + 4] * AL, sx = sat(S[i * 6 + 3]), sy = sat(S[i * 6 + 4]);
+    if (!sx && !sy) return null;
+    while (j < V.length && V[j].t < i) j++;
+    if (j === 0 || j >= V.length) return null;                     // no anchor on one side: the v6 readings
+    const a = V[j - 1], b = V[j], u = (i - a.t) / (b.t - a.t), M = a.M + (b.M - a.M) * u, ps = a.psi + (b.psi - a.psi) * u;
+    const c = Math.cos(ps - th), s = Math.sin(ps - th);
+    const fx = M * c + w * w * cxu, fy = M * s + w * w * cyu, M2 = fx * fx + fy * fy;
+    if (!sy) return [Math.sign(rx) * Math.max(Math.abs(rx), Math.sqrt(Math.max(0, M2 - ry * ry))), ry];
+    if (!sx) return [rx, Math.sign(ry) * Math.max(Math.abs(ry), Math.sqrt(Math.max(0, M2 - rx * rx)))];
+    return [Math.sign(rx) * Math.max(Math.abs(rx), Math.sign(rx) * fx), Math.sign(ry) * Math.max(Math.abs(ry), Math.sign(ry) * fy)];
+  };
+  return { A, at };
+}
 function analyzeCapture(S, I) {
-  const n = S.length / 6, dt = 1 / I.odr, AL = I.alsb, GL = I.glsb, SAT = 32200;
+  // v6 (firmware log version 6): the steady axial force comes off too, a hit needs the spin to drop, gravity as measured,
+  // the exact attitude step, spin from the wobble's turning, nose and hyzer on the real axis, the chip's own clock
+  const v6 = I.logVer >= 6, n = S.length / 6, dt = 1 / (v6 && I.rateHz > 380 && I.rateHz < 460 ? I.rateHz : I.odr), AL = I.alsb, GL = I.glsb, SAT = 32200;
   const v4 = I.logVer >= 4, P = v4 ? relRules(I) : null;
+  const v7 = I.logVer >= 7;           // v7 (firmware log version 7): the maxed in-plane force is filled in (fillAccel)
   const ax = i => S[i * 6 + 3] * AL, ay = i => S[i * 6 + 4] * AL, az = i => S[i * 6 + 5] * AL;
   const gx = i => S[i * 6] * GL, gy = i => S[i * 6 + 1] * GL, gz = i => S[i * 6 + 2] * GL;
   const sat = v => v >= SAT || v <= -SAT, mag = i => Math.hypot(ax(i), ay(i), az(i));
@@ -1203,7 +1326,8 @@ function analyzeCapture(S, I) {
   const hold = 10, L = 36, gap = 20, settle = 12, flightN = 104;
   for (let i = 0; i < n; i++) if (sat(S[i * 6 + 3]) || sat(S[i * 6 + 4]) || sat(S[i * 6 + 5])) { R.flags |= FL.ACCEL_SAT; break; }
   const inMed = (a, b) => { const xs = [], ys = []; for (let k = a; k < b && xs.length < 64; k++) { xs.push(ax(k)); ys.push(ay(k)); } return [medianOf(xs), medianOf(ys)]; };
-  const comp = (k, mx, my) => Math.hypot(ax(k) - mx, ay(k) - my, az(k));
+  const comp = (k, mx, my, mz = 0) => Math.hypot(ax(k) - mx, ay(k) - my, az(k) - mz);
+  const zMed = (a, b) => { const zs = []; for (let k = a; k < b && zs.length < 64; k++) zs.push(az(k)); return medianOf(zs); };
   // v4: a disc in flight spins freely - steady, one direction, fast enough: over steadyN samples from i, raw gyro z
   const steady = i => {
     const m = Math.min(i + P.steadyN, n); let sum = 0, lo = 1e9, hi = 0, pos = 0, neg = 0;
@@ -1211,10 +1335,12 @@ function analyzeCapture(S, I) {
     const mean = sum / (m - i);
     return { rpm: mean / 6, ok: !(mean < P.relMinRpm * 6 || (pos && neg) || hi - lo > 0.3 * mean + 60) };
   };
-  const releaseAt = i => {
+  const releaseAt = (i, pk = 0) => {
     if (i + hold > n) return false;
-    const e = Math.min(i + L, n), [mx, my] = inMed(i, e);
-    for (let k = i; k < i + hold; k++) if (comp(k, mx, my) > I.freeG) return false;
+    const e = Math.min(i + L, n), [mx, my] = inMed(i, e), mz = v6 ? zMed(i, e) : 0;
+    // v6: after a hard pull (12 g or more) wobble swings the flight's force by several g
+    const hard = v6 && pk >= 12, holdLim = hard ? 5 : I.freeG, gapLim = hard ? 5.5 : I.trigG;
+    for (let k = i; k < i + hold; k++) if (comp(k, mx, my, mz) > holdLim) return false;
     let gzMax = 0, gzSum = 0, hMax = 0, hSum = 0;
     for (let k = i; k < e; k++) { const v = Math.abs(gz(k)); gzSum += v; if (v > gzMax) gzMax = v; if (k < i + hold) { hSum += v; if (v > hMax) hMax = v; } }
     if (gzMax < 0.98 * 32767 * GL) { const w = gzSum / (e - i) * D2R; if (Math.hypot(mx, my) > w * w * I.radius / GMS * 1.5 + 1.5) return false; }
@@ -1222,7 +1348,7 @@ function analyzeCapture(S, I) {
       const [hx, hy] = inMed(i, i + hold), w = hSum / hold * D2R; if (Math.hypot(hx, hy) > w * w * I.radius / GMS * 1.5 + 1.5) return false;
     }
     const ge = Math.min(i + hold + gap, n);
-    for (let k = i + hold; k < ge; k++) if (comp(k, mx, my) > I.trigG) return false;
+    for (let k = i + hold; k < ge; k++) if (comp(k, mx, my, mz) > gapLim) return false;
     if (v4 && P.relMinRpm > 0 && !steady(i).ok) return false;
     return true;
   };
@@ -1231,12 +1357,12 @@ function analyzeCapture(S, I) {
   const i0 = 415 < n ? 415 : 0; let iRel = 0, iPeak = i0, found = false, run = 0;
   const p0 = v4 ? (i0 > P.prePeak ? i0 - P.prePeak : 0) : i0, gate = v4 ? P.relPeakG : I.trigG;
   for (let i = p0; i < i0; i++) { const m = mag(i); if (m > run) run = m; }
-  for (let i = i0; i + hold < n; i++) { const m = mag(i); if (m > run) { run = m; iPeak = i; } if (run > gate && releaseAt(i)) { iRel = i; found = true; break; } }
+  for (let i = i0; i + hold < n; i++) { const m = mag(i); if (m > run) { run = m; iPeak = i; } if (run > gate && releaseAt(i, run)) { iRel = i; found = true; break; } }
   if (!found) { iRel = iPeak; R.flags |= FL.NO_RELEASE; }
   let peak = 0; for (let i = p0; i <= iRel && i < n; i++) peak = Math.max(peak, mag(i));
   // the hand force the release test looked at (steady in-plane part removed, look-ahead median)
   // 3. still moment
-  let bias = I.bias.slice(), iStart = 0, stillAt = -1, seedAt = -1, seedKind = "", q;
+  let bias = I.bias.slice(), iStart = 0, stillAt = -1, seedAt = -1, seedKind = "", q, gRef = 1;
   const win = Math.floor(0.15 / dt), limit = iRel > win ? iRel - win : 0;
   for (let i = 0; i + win < n && i < limit; i++) {
     const sm = [0, 0, 0, 0, 0, 0]; let still = true;
@@ -1247,6 +1373,7 @@ function analyzeCapture(S, I) {
     }
     if (still) {
       q = Q4.up(sm[0] / win, sm[1] / win, sm[2] / win);
+      if (v6) gRef = Math.hypot(sm[0], sm[1], sm[2]) / win;   // gravity as this chip reads it
       const b = [sm[3] / win, sm[4] / win, sm[5] / win];
       // v4: the gyro offset measured here is used only within biasTol of the disc's own (a hand's tremor is not offset)
       if (!v4 || P.biasTol <= 0 || Math.hypot(b[0] - I.bias[0], b[1] - I.bias[1], b[2] - I.bias[2]) <= P.biasTol) bias = b;
@@ -1281,10 +1408,20 @@ function analyzeCapture(S, I) {
   // 4. free flight: release + settle .. impact
   const impactAfter = rel => {
     const s0 = rel + settle; if (s0 + 2 >= n) return n;
-    const e = Math.min(s0 + L, n), [mx, my] = inMed(s0, e), m = [];
-    for (let k = s0; k < e && m.length < 64; k++) m.push(comp(k, mx, my));
-    const lim = Math.min(4.0, medianOf(m) + 1.5); R.impLim = lim; R.impMed = [mx, my];
-    for (let k = s0; k < n; k++) if (comp(k, mx, my) > lim) return k;
+    const e = Math.min(s0 + L, n), [mx, my] = inMed(s0, e), mz = v6 ? zMed(s0, e) : 0, m = [];
+    for (let k = s0; k < e && m.length < 64; k++) m.push(comp(k, mx, my, mz));
+    const lim = Math.min(4.0, medianOf(m) + 1.5); R.impLim = lim; R.impMed = [mx, my, mz];
+    if (!v6) { for (let k = s0; k < n; k++) if (comp(k, mx, my) > lim) return k; return n; }
+    // v6: a hit stops the spin; force alone, unless it is over 12 g (the ground can leave a disc spinning), can be wobble
+    const lv = []; for (let k = s0; k < e && lv.length < 64; k++) lv.push(Math.abs(gz(k)));
+    const level = medianOf(lv), top = 0.98 * 32767 * GL, allSat = level >= top;
+    for (let k = s0; k < n; k++) {
+      const v = comp(k, mx, my, mz); if (v <= lim) continue;
+      if (v > 12 || level < 120) return k;
+      let r = 0;
+      for (let j = k; j < Math.min(k + 40, n); j++) { const g = Math.abs(gz(j)); r = (allSat ? g < top : g < 0.85 * level) ? r + 1 : 0; if (r >= 3) return k; }
+      if (k + 40 >= n) return k;
+    }
     return n;
   };
   const imp = impactAfter(iRel);
@@ -1292,8 +1429,8 @@ function analyzeCapture(S, I) {
   // in flight up to the impact the impact test's fixed one
   R.hand = new Float32Array(n).fill(NaN);
   for (let i = i0; i < n; i++) {
-    const [mx, my] = R.impMed && i >= iRel + settle && i <= imp ? R.impMed : inMed(i, Math.min(i + L, n));
-    R.hand[i] = comp(i, mx, my);
+    const [mx, my, mz] = R.impMed && i >= iRel + settle && i <= imp ? R.impMed : v6 ? [...inMed(i, Math.min(i + L, n)), zMed(i, Math.min(i + L, n))] : inMed(i, Math.min(i + L, n));
+    R.hand[i] = comp(i, mx, my, mz);
   }
   let f0, f1;
   if (!v4) {
@@ -1348,10 +1485,22 @@ function analyzeCapture(S, I) {
   })();
   if (wave.wrong) R.flags |= FL.WAVE_REJECTED;
   const centrip = Math.hypot(wave.mx, wave.my) * GMS;
-  const spinC = I.radius > 0.0005 && centrip > 0.2 ? Math.sqrt(centrip / I.radius) * 60 / (2 * Math.PI) : 0;
+  // v6: the steady force is (w^2 + wp^2 / 2) r, wp the wobble's own rate
+  let wp2 = 0; if (v6 && cnt) { for (let i = f0; i < f1; i++) wp2 += ((gx(i) - bias[0]) * D2R) ** 2 + ((gy(i) - bias[1]) * D2R) ** 2; wp2 /= cnt; }
+  const spinC = I.radius > 0.0005 && centrip > 0.2 ? Math.sqrt(Math.max(0, centrip / I.radius - wp2 / 2)) * 60 / (2 * Math.PI) : 0;
   // the radius the disc would learn from this throw (v4: windows over 24 samples only)
-  const rLearn = v4 && f1 > f0 + 24 && !(R.flags & FL.GYRO_Z_SAT) && spin > 120 && spin < 320 && wobble < 12 ? centrip / (spinDps * D2R) ** 2 : 0;
-  if (R.flags & FL.GYRO_Z_SAT) {
+  const rLearn = v4 && f1 > f0 + 24 && !(R.flags & FL.GYRO_Z_SAT) && spin > 120 && spin < 320 && wobble < 12 ? centrip / ((spinDps * D2R) ** 2 + wp2 / 2) : 0;
+  // v6: a wobbling disc's in-plane rate turns round, in the disc's axes, at 0.99 x the spin (throw_metrics.h spinFromTurn)
+  let spinT = 0;
+  if (v6 && (R.flags & FL.GYRO_Z_SAT) && f1 >= f0 + 14) {
+    const xs = [], ys = []; for (let i = f0; i < f1; i++) { xs.push((gx(i) - bias[0]) * D2R); ys.push((gy(i) - bias[1]) * D2R); }
+    const tr = DiscTrack.turnRate(xs, ys, dt, 0.98 * 32767 * GL * D2R);
+    if (tr && tr.mag >= 600 * D2R && tr.rms < 0.45 && tr.turns >= (tr.n >= 16 && tr.rms < 0.3 ? 0.3 : 0.5) && tr.w * sgn > 0) spinT = Math.abs(tr.w) / 0.99 * 60 / (2 * Math.PI);
+  }
+  if (spinT > 0) {
+    if (spinC > 0 && Math.abs(spinT - spinC) < 0.15 * spinT) { spin = 0.5 * (spinT + spinC); src = 5; } else { spin = spinT; src = 4; }
+    R.flags |= FL.SPIN_FROM_ACC; wobble = cone(spin * 6);
+  } else if (R.flags & FL.GYRO_Z_SAT) {
     const w = wave.rpm, c = spinC;
     if (w > 0 && c > 0) {
       if (v4 && P.locked && f1 < f0 + 64) { spin = c; src = 2; }   // v4: short window, radius from the calibration page
@@ -1369,15 +1518,23 @@ function analyzeCapture(S, I) {
       if (Math.abs(gT) > Math.abs(g0)) cm = iRel - c0 + 1; else c0 = -1;
     }
   }
+  const gzAt = i => c0 >= 0 && i >= c0 && sat(S[i * 6 + 2]) ? g0 + (gT - g0) * (i - c0 + 1) / cm : gz(i) - bias[2];
+  // 5a. v7: the in-plane force maxed out (16 g) - fill it in from the readings around it (throw_metrics.h step 5a)
+  const fA = v7 ? fillAccel(S, I, P, iStart, iRel, n, found, c0, wave, gzAt, dt) : null;
+  R.fillA = new Float32Array(n).fill(NaN); R.fillAN = 0; R.fillAnchors = fA ? fA.A.length : 0;
   R.speedTrace = new Float32Array(n).fill(NaN); R.fill = new Float32Array(n).fill(NaN);
-  let vx = 0, vy = 0, vz = 0;
+  let vx = 0, vy = 0, vz = 0, th = 0;
   for (let i = iStart; i <= iRel && i < n; i++) {
     const filled = c0 >= 0 && i >= c0 && sat(S[i * 6 + 2]);
-    const gzd = filled ? g0 + (gT - g0) * (i - c0 + 1) / cm : gz(i) - bias[2];
+    const gzd = gzAt(i);
     if (filled) R.fill[i] = Math.abs(gzd) / 6;
-    q.integ((gx(i) - bias[0]) * D2R, (gy(i) - bias[1]) * D2R, gzd * D2R, dt);
-    const w = q.rot(ax(i), ay(i), az(i));
-    vx += w[0] * GMS * dt; vy += w[1] * GMS * dt; vz += (w[2] - 1) * GMS * dt;
+    q[v6 ? "exact" : "integ"]((gx(i) - bias[0]) * D2R, (gy(i) - bias[1]) * D2R, gzd * D2R, dt);
+    th += gzd * D2R * dt;
+    const f = fA && fA.at(i, th, gzd * D2R), fx = f ? f[0] : ax(i), fy = f ? f[1] : ay(i);
+    if (f) { R.fillA[i] = Math.hypot(fx, fy, az(i)); R.fillAN++; }
+    const w = q.rot(fx, fy, az(i));
+    vx += w[0] * GMS * dt; vy += w[1] * GMS * dt; vz += (w[2] - gRef) * GMS * dt;
+    if (v6 && (sat(S[i * 6]) || sat(S[i * 6 + 1]))) R.flags |= FL.GYRO_XY_SAT;
     R.speedTrace[i] = Math.hypot(vx, vy, vz) * 2.2369363;
   }
   // 5b. v4: the lever arm. That is the SENSOR's velocity, and the sensor sits r off the spin axis, so it also moves
@@ -1388,7 +1545,7 @@ function analyzeCapture(S, I) {
     let clipped = false;
     for (let k = iRel > 20 ? iRel - 20 : 0; k <= iRel && k < n; k++) if (sat(S[k * 6 + 2])) { clipped = true; break; }
     const w = sgn * spin * 6 * D2R, rx = -wave.mx * GMS / (w * w), ry = -wave.my * GMS / (w * w);
-    if (!clipped && Math.hypot(rx, ry) < 0.03) {
+    if ((!clipped || (v6 && src)) && Math.hypot(rx, ry) < 0.03) {
       const c = q.rot(-w * ry, w * rx, 0), before = Math.hypot(vx, vy, vz);   // w x r in world axes
       vx -= c[0]; vy -= c[1]; vz -= c[2];
       lever = (Math.hypot(vx, vy, vz) - before) * 2.2369363; leverR = [rx, ry]; R.flags |= FL.LEVER_ARM;
@@ -1396,10 +1553,35 @@ function analyzeCapture(S, I) {
   }
   // 6-7. disc angles at release, against the flight direction; the spin direction sets the hyzer sign
   if (gzSigned > 0) R.flags |= FL.SPIN_CCW;
-  const { speed, launch, hyzer, nose, normal } = discAngles(q, vx, vy, vz, gzSigned > 0);
+  // v6: nose and hyzer on the disc's real axis, its angular momentum: L = I1 (wx, wy) + I3 wz in the disc's axes, over the
+  // first readings of flight. Needs a real spin number.
+  let axis = null;
+  if (v6 && found && spin > 60 && (src || !(R.flags & FL.GYRO_Z_SAT))) {
+    const qf = new Q4(q.w, q.x, q.y, q.z), Lv = [0, 0, 0], wSat = sgn * spin * 6, kEnd = Math.min(iRel + 60, imp > 2 ? imp - 2 : 0, n); let c = 0;
+    for (let k = iRel + 1; k < kEnd; k++) {
+      const a = gx(k) - bias[0], b = gy(k) - bias[1], d = sat(S[k * 6 + 2]) ? wSat : gz(k) - bias[2];
+      qf.exact(a * D2R, b * D2R, d * D2R, dt);
+      if (k < iRel + 3 || sat(S[k * 6]) || sat(S[k * 6 + 1])) continue;
+      const zk = 2 * d, m = Math.hypot(a, b, zk), sg = d < 0 ? -1 : 1, nk = qf.rot(sg * a / m, sg * b / m, sg * zk / m);
+      Lv[0] += nk[0]; Lv[1] += nk[1]; Lv[2] += nk[2]; c++;
+    }
+    const lm = Math.hypot(...Lv);
+    if (c >= 6 && lm > 0.5 * c) {
+      const u = Lv.map(x => x / lm), n0 = q.rot(0, 0, 1);
+      if (n0[0] * u[0] + n0[1] * u[1] + n0[2] * u[2] > 0.866) axis = u;
+    }
+  }
+  const { speed, launch, hyzer, nose, normal } = discAngles(q, vx, vy, vz, gzSigned > 0, axis);
   // 8. is this actually a throw?
   const allowNR = (I.sens || 5) <= 2;
   if (peak > I.minPeak && spin >= I.minSpin && (allowNR || !(R.flags & FL.NO_RELEASE))) R.flags |= FL.VALID;
+  // firmware v5 and later: a hard pull is counted however the checks went, marked low confidence (finalizeThrow, rule R5)
+  if (!(R.flags & FL.VALID) && I.logVer >= 5) {
+    let pkAll = peak, fast = 0, top = 0;
+    for (let i = p0; i < n; i++) pkAll = Math.max(pkAll, mag(i));
+    for (let i = 0; i < n; i++) { const g = Math.abs(gz(i) - I.bias[2]); if (g >= 1000) fast++; top = Math.max(top, g); }
+    if (pkAll >= 8 && fast >= 40) { R.flags |= FL.VALID | FL.LOW_CONF; if (spin < top / 6) spin = top / 6; }
+  }
   return Object.assign(R, { i0, iRel, found, peak, iPeak, stillAt, iStart, win, imp, f0, f1, spin, spinGyro: spinDps / 6, wobble, src,
     wave, centrip, spinC, satCount, cnt, c0, cm, g0, gT, speed, launch, hyzer, nose, bias, mgx, mgy, vx, vy, vz, normal, odr: I.odr },
     v4 ? { v4, rules: P, p0, seedAt, seedKind, relSpin: found ? steady(iRel).rpm : 0, rLearn, lever, leverR } : {});
@@ -1681,7 +1863,10 @@ function renderLastThrow() {
     c("Nose", `${signed(d[3])}°`) + c("Launch", `${signed(d[4])}°`) + c("Wobble", `${d[5].toFixed(1)}°`) +
     c("Peak force", `${d[6].toFixed(1)} g`) + c("Counted", e.c.counted ? "yes" : "no (see the steps)") +
     ((nw => nw && $("lpRebuilt").checked ? `<span class="why" style="color:${COL.rebuilt}">Rebuilt past the sensor's limits: ${nw.speed.toFixed(1)} mph, ${spinTxt(nw)} (${nw.spinSrc}), ` +
-      `hyzer ${signed(nw.hyzer)}°, nose ${signed(nw.nose)}°, launch ${signed(nw.launch)}°${nw.relFound ? "" : " - release not found, the disc's mark used"}.</span>` : "")(nwOf(e)));
+      `hyzer ${signed(nw.hyzer)}°, nose ${signed(nw.nose)}°, launch ${signed(nw.launch)}°${nw.relFound ? "" : " - release not found, the disc's mark used"}.` +
+      // track.js: both face axes maxed out for longer than the fit can bridge, so the pull's peak is a guess (not
+      // said when the speed came from the air's drag instead, which does not use the pull)
+      `${nw.underDetermined && nw.speedSrc !== "drag" ? " Both sides of the sensor maxed out for a long stretch of the pull, so this speed is a rough estimate." : ""}</span>` : "")(nwOf(e)));
 }
 function renderThrowSel() {
   const sel = $("lpThrowSel");
@@ -1693,6 +1878,7 @@ function renderThrowSel() {
 function renderBreakdown() {
   if (settings.mode !== "live") return;                       // drawn when the live page opens (setMode)
   const e = live.sel, cv = $("lpBreak"), { g, W, H } = fitCanvas(cv);
+  $("lpRulesNote").hidden = !(e && e.anNew);
   if (!e || !e.an || !e.an.n) {
     $("lpCheck").textContent = "";
     g.font = "14px system-ui, Segoe UI, sans-serif"; g.fillStyle = "#8b97a8"; g.textAlign = "center";
@@ -1718,7 +1904,7 @@ function renderBreakdown() {
   if (nwOn && Math.abs(nw.rel - an.iRel) >= 3) vlines.push({ i: nw.rel, color: COL.rebuilt, label: "release (rebuilt)" });
   if (an.imp < n) vlines.push({ i: an.imp, color: "#f87171", label: "impact" });
   else if (e.c.end === 1) vlines.push({ i: n - 1, color: "#f87171", label: "impact: recording ends" });
-  let fpk = 0; for (const [a, b] of ranges) for (let i = a; i <= Math.min(b, n - 1); i++) fpk = Math.max(fpk, A(i));
+  let fpk = 0; for (const [a, b] of ranges) for (let i = a; i <= Math.min(b, n - 1); i++) fpk = Math.max(fpk, A(i), an.fillA && isFinite(an.fillA[i]) ? an.fillA[i] : 0);
   const axisH = 16, gapH = 6, ph = (H - axisH - gapH * 2) / 3, Rk = k => ({ x: 0, y: k * (ph + gapH), w: W, h: ph });
   const fl = [{ v: I.trigG, color: "#94a3b8", label: `trigger ${nf(I.trigG)} g` }, { v: I.freeG, color: "#fbbf24", label: `release: under ${nf(I.freeG)} g` }];
   if (an.v4) fl.push({ v: an.rules.relPeakG, color: "#a78bfa", label: `pull peak over ${nf(an.rules.relPeakG)} g` });
@@ -1728,6 +1914,7 @@ function renderBreakdown() {
   panel(g, Rk(0), { segs, yMin: 0, yMax: Math.min(80, Math.max(5, fpk * 1.1, fnw * 1.05)), sqrt: true, title: "Force (g)", bands, vlines, vlabels: true, hlines: fl,
     series: [{ get: i => i >= 0 && i < n ? A(i) : null, color: COL.abs, label: "total" },
              { get: i => isFinite(an.hand[i]) ? an.hand[i] : null, color: COL.hand, label: "hand force (off-center part removed)", width: 1.8 }]
+      .concat(an.fillAN ? [{ get: i => isFinite(an.fillA[i]) ? an.fillA[i] : null, color: COL.fill, label: "filled in (sensor maxed)", dash: [5, 3], width: 2 }] : [])
       .concat(nwOn && nw.fit ? [{ get: nwF, color: COL.rebuilt, label: "rebuilt past the 16 g limit", width: 2, dash: [5, 3] }] : []) });
   const inFlight = val => i => i >= an.f0 && i < an.f1 && val > 0 ? val : null;
   const spinSeries = [{ get: i => i >= 0 && i < n ? Math.abs(S[i * 6 + 2] * I.glsb - an.bias[2]) / 6 : null, color: COL.spinG, label: "gyro z ÷ 6" }];
@@ -1745,8 +1932,11 @@ function renderBreakdown() {
       .concat(nwOn ? [{ get: nwV, color: COL.rebuilt, label: `rebuilt → ${nw.speed.toFixed(1)} mph, held at its release`, width: 2 }] : []) });
   timeAxis(g, segs, H - axisH + 3, odr, 415, t => `${t > 0 ? "+" : ""}${t} s`);
   // the disc's own numbers vs this page's re-calculation
-  const d = e.c.res, ok = Math.abs(d[0] - an.speed) < 0.6 && Math.abs(d[1] - an.spin) < 4 && Math.abs(d[2] - an.hyzer) < 1 && Math.abs(d[4] - an.launch) < 1;
-  $("lpCheck").innerHTML = (ok ? `<span style="color:var(--good)">✓ this page's re-calculation matches the disc</span>` :
+  // nose too: the v7 fill of the maxed force changes it the most, so a fault in that mirror would show there first
+  const d = e.c.res, ok = Math.abs(d[0] - an.speed) < 0.6 && Math.abs(d[1] - an.spin) < 4 && Math.abs(d[2] - an.hyzer) < 1 && Math.abs(d[3] - an.nose) < 1 && Math.abs(d[4] - an.launch) < 1;
+  // newer rules than the disc's: a difference is what the firmware fix changes, not a fault, so nothing is compared
+  $("lpCheck").innerHTML = (e.anNew ? `<span style="color:var(--muted)">not compared: the disc used older rules</span>` :
+    ok ? `<span style="color:var(--good)">✓ this page's re-calculation matches the disc</span>` :
     `<span style="color:var(--warn)">re-calculation differs from the disc (disc ${d[0].toFixed(1)} mph / ${d[1].toFixed(0)} rpm vs ${an.speed.toFixed(1)} / ${an.spin.toFixed(0)})${e.missing ? ` – ${e.missing} readings were missing` : ""}</span>`) +
     (nwOn ? ` · <span style="color:${COL.rebuilt}">rebuilt: ${nw.speed.toFixed(1)} mph, ${spinTxt(nw)}` +
       (!nw.relFound ? ", release not found (used the disc's mark)"
@@ -1760,7 +1950,8 @@ function renderSteps(e) {
   const sw = c => `<span class="sw" style="background:${c.replace(/0\.\d+\)$/, "0.9)")}"></span>`;
   const warn = t => ` <span style="color:var(--warn)">${t}</span>`;
   const src = { 0: "the gyro: average |gyro z| ÷ 6", 1: "the drag wave in the accelerometer", 2: "the off-center force, √(a ÷ r)",
-                3: "the drag wave and the off-center force (they agreed, so averaged)" }[an.src];
+                3: "the drag wave and the off-center force (they agreed, so averaged)", 4: "the wobble's turning rate in the gyro's x and y",
+                5: "the wobble's turning rate and the off-center force (they agreed, so averaged)" }[an.src];
   const endWhy = { 1: "at the impact", 2: "once the flight window was full", 3: "at the 3 s limit", 4: "because readings were lost" }[e.c.end];
   const offs = an.bias.map(v => v.toFixed(1)).join(", ");
   const L = [];
@@ -1776,7 +1967,9 @@ function renderSteps(e) {
   else L.push(`${sw(BAND.seed)}<b>No still or quiet moment</b> in the 1 s before the throw, so "down" comes from the steadiest 100 ms (${ts(an.seedAt)}) – a guess; speed and angles may be off.` + warn("Hold the disc still for a moment before throwing."));
   L.push(`${sw(BAND.pull)}<b>Wind-up + pull</b> (${ms(an.iRel - an.iStart)}, ${v4 && an.stillAt < 0 && an.seedAt >= 0 ? "quiet" : "still"} moment → release): each reading is turned into world directions with the gyro, gravity (1 g) is taken off, and it is multiplied by 1/${odr} s and added up → velocity. Peak force ${an.peak.toFixed(1)} g${v4 ? ` (from ${(P.prePeak / odr).toFixed(1)} s before the trigger)` : ""}.` +
     (an.c0 >= 0 ? ` The gyro maxed out for the last ${ms(an.iRel - an.c0 + 1)} (spin over 382 rpm), so its rate there was filled in with a straight ramp up to the release spin.` : "") +
-    (an.flags & FL.ACCEL_SAT ? warn("The accelerometer maxed out (16 g), so speed may read low.") : ""));
+    (an.fillAN ? ` The accelerometer maxed out (16 g) along the disc's face for ${an.fillAN} readings. As the disc spun, the force kept sweeping back into range for a moment; those moments show its size and direction, and the readings between them were filled in (dashed line in the force chart).` : "") +
+    (an.flags & FL.ACCEL_SAT ? warn(an.fillAN ? "The filled-in force is an estimate, so speed and angles are less certain." : "The accelerometer maxed out (16 g), so speed may read low.") : "") +
+    (an.flags & FL.GYRO_XY_SAT ? warn("The gyro maxed out on a tilt axis before release, so nose, hyzer and launch are uncertain.") : ""));
   const sensNote = (I.sens || 5) <= 2 ? "Counted anyway at this sensitivity." : "Not counted at this sensitivity.";
   if (!v4) L.push(an.found
     ? `<b>Release</b> (${ts(an.iRel)}): the hand force (total minus the steady off-center part) stayed under ${nf(I.freeG)} g for 25 ms, and no pulling followed in the next 48 ms.`
@@ -1839,6 +2032,13 @@ if (window.ResizeObserver) {
   new ResizeObserver(() => { cancelAnimationFrame(rbRaf); rbRaf = requestAnimationFrame(renderBreakdown); }).observe($("lpBreak").parentElement);
 }
 $("lpRebuilt").onchange = () => { renderBreakdown(); renderLastThrow(); };
+$("lpRules").checked = newRules;
+// every throw in the list is analysed again at once, so picking another one needs no extra step
+$("lpRules").onchange = () => {
+  newRules = $("lpRules").checked;
+  for (const e of live.caps) if (e.anOwn !== undefined) analyzeShown(e);
+  renderBreakdown();
+};
 window.addEventListener("resize", () => { if (settings.mode === "live") { renderBreakdown(); renderLog(); } });
 
 // ================================================================ throw log: what each throw really was
@@ -1873,7 +2073,8 @@ function capFlight(e) {
 const rebuiltRec = e => { const nw = nwOf(e); return nw ? { speed: nw.speed, spin: nw.spin, spinAtLeast: nw.atLeast, hyzer: nw.hyzer, nose: nw.nose,
   launch: nw.launch, spinFrom: nw.spinSrc, releaseFound: nw.relFound, relShiftMs: (nw.rel - e.c.rel) / nw.rate * 1000 } : null; };
 function capRecord(e) {
-  const an = e.an && e.an.n ? e.an : null, fl = e.flight;
+  // the log keeps the recorded rules' results, also while the newer-rules switch is ticked (see analyzeShown)
+  const a0 = e.anOwn !== undefined ? e.anOwn : e.an, an = a0 && a0.n ? a0 : null, fl = e.flight;
   return { id: e.id, at: e.at, label: e.label, c: e.c, S: e.S, info: e.info, missing: e.missing, live: e.liveEst,
     page: an && { speed: an.speed, spin: an.spin, hyzer: an.hyzer, nose: an.nose, launch: an.launch, wobble: an.wobble, peak: an.peak,
       spinGyro: an.spinGyro, spinCentrip: an.spinC, spinWave: an.wave.rpm, flags: an.flags, src: an.src, rel: an.iRel, stillAt: an.stillAt,
@@ -1963,7 +2164,7 @@ $("lgCsv").onclick = async () => {
     "gyro_maxed_ms", "flight_window_ms", "ended_by", "live_speed_mph", "page_matches_disc", "sim_disc", "notes",
     "rebuilt_speed_mph", "rebuilt_spin_rpm", "rebuilt_spin_is_at_least", "rebuilt_hyzer_deg", "rebuilt_nose_deg", "rebuilt_launch_deg", "rebuilt_spin_from",
     "rebuilt_release_found", "rebuilt_release_vs_disc_ms"];
-  const SRC = ["gyro", "drag wave", "centripetal", "wave+centripetal"], END = { 1: "impact", 2: "flight window", 3: "time limit", 4: "readings lost" };
+  const SRC = ["gyro", "drag wave", "centripetal", "wave+centripetal", "wobble", "wobble+centripetal"], END = { 1: "impact", 2: "flight window", 3: "time limit", 4: "readings lost" };
   // throws logged before the new tracker are rebuilt here once (a few at a time, so the page keeps going) and kept
   const rows = [], fresh = [];
   for (let i = 0; i < recs.length; i++) {
@@ -2002,7 +2203,8 @@ logAll().then(recs => {
   live.logStats = { total: recs.length, labeled: recs.filter(r => r.label).length };
   const old = recs.sort((a, b) => a.at - b.at).slice(-30).filter(r => !live.caps.some(x => x.id === r.id)).map(r => {
     const e = { id: r.id, at: r.at, c: r.c, S: r.S, info: r.info, missing: r.missing, label: r.label, liveEst: r.live, old: true };
-    try { e.an = analyzeCapture(r.S, r.info); } catch { e.an = null; }
+    try { e.anOwn = analyzeCapture(r.S, r.info); } catch { e.anOwn = null; }
+    analyzeShown(e);
     e.flight = capFlight(e); return e;
   });
   live.caps.unshift(...old);

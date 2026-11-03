@@ -222,10 +222,16 @@ function quatFromMat(R) {                     // Shepperd: the largest of w, x, 
 }
 // The firmware's own "cal" (calibratePlacement): the shortest rotation taking the measured up u (unit, board axes) onto +Z.
 function calR(u) {
-  const [ux, uy, uz] = u;
-  if (uz < -0.9999) return [1, 0, 0, 0, -1, 0, 0, 0, -1];
-  const vx = uy, vy = -ux, k = 1 / (1 + uz);
-  return [1 - vy * vy * k, vx * vy * k, vy, vx * vy * k, 1 - vx * vx * k, -vx, -vy, vx, 1 - (vx * vx + vy * vy) * k];
+  const [ux, uy, uz] = u, flip = uz < 0 ? -1 : 1;         // chip down: a half turn about the board's own X first
+  const vx = flip * uy, vy = -ux, k = 1 / (1 + flip * uz);
+  const T = [1 - vy * vy * k, vx * vy * k, vy, vx * vy * k, 1 - vx * vx * k, -vx, -vy, vx, 1 - (vx * vx + vy * vy) * k];
+  return [T[0], T[1] * flip, T[2] * flip, T[3], T[4] * flip, T[5] * flip, T[6], T[7] * flip, T[8] * flip];
+}
+// How far R's in-plane axes sit from the sensor's own, degrees (0 to 45). The sensor maxes out along its own axes, and
+// a maxed axis mixed into a reading looks like an ordinary reading: the rebuild needs this near 0.
+function mixDeg(R) {
+  const a = Math.abs(Math.atan2(R[1], R[0]) * R2D) % 90;
+  return Math.min(a, 90 - a);
 }
 
 // ---------------------------------------------------------------- packets
@@ -313,12 +319,21 @@ function buildR(n, f) {
   const z = V.unit(n), x = V.unit(V.sub(f, V.mul(z, V.dot(f, z))));
   return M3.rows(x, V.cross(z, x), z);
 }
-// New "up" n, keeping the old R's in-plane direction (no front measured): the smallest possible change.
+// The board's own axis (+-x or +-y) nearest a direction f, for "up" n. R's in-plane axes stay on the sensor's axes, so a
+// maxed sensor axis stays one output's business and the rebuild can see it. The front is then within 45 deg of the
+// disc's x axis; the phone's "Set front" takes care of the rest.
+function nearestBoardAxis(n, f) {
+  const z = V.unit(n), axes = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]];
+  let best = axes[0], bd = -2;
+  for (const a of axes) { const p = V.unit(V.sub(a, V.mul(z, V.dot(a, z)))), d = V.dot(p, V.unit(V.sub(f, V.mul(z, V.dot(f, z))))); if (d > bd) { bd = d; best = a; } }
+  return best;
+}
+// New "up" n, keeping the old R's in-plane direction as near as the sensor's own axes allow (no front measured).
 function keepYawR(n, Rold) {
   const z = V.unit(n);
   let f = M3.row(Rold, 0);
   if (Math.abs(V.dot(f, z)) > 0.9) f = V.cross(M3.row(Rold, 1), z);
-  return buildR(z, f);
+  return buildR(z, nearestBoardAxis(z, f));
 }
 
 // ---------------------------------------------------------------- still detector
@@ -435,7 +450,7 @@ function fitToss(seg, dt) {
   ax /= iEnd; ay /= iEnd; az /= iEnd; w2 /= iEnd; wz /= iEnd; mx /= iEnd; my /= iEnd;
   for (let i = 0; i < iEnd; i++) wob += (S[i][2] - mx) ** 2 + (S[i][3] - my) ** 2;
   out.wob = Math.sqrt(wob / iEnd) / Math.max(1, Math.abs(wz));
-  out.r = Math.hypot(ax, ay) * GMS / w2; out.rVec = [-ax * GMS / w2, -ay * GMS / w2];
+  out.r = Math.hypot(ax, ay) * GMS / w2; out.rVec = [-ax * GMS / w2, -ay * GMS / w2]; out.az = az; out.k = k;
   const R_ = out.reasons;
   if (clip) R_.push(["Spun too fast – over 382 rpm the gyro maxes out.", "Spin it more gently: about 2–5 turns a second."]);
   else if (out.rpm < 90) R_.push([`Too slow (${out.rpm.toFixed(0)} rpm).`, "Give it a bit more spin: about 2–5 turns a second."]);
@@ -455,7 +470,106 @@ function pickTosses(fits) {
   const m = median(good), inl = good.filter(r => Math.abs(r - m) <= 0.06 * m);
   if (inl.length < 3) return { ok: false, good: good.length, spread: true };
   const mean = inl.reduce((a, v) => a + v, 0) / inl.length, spreadPct = (Math.max(...inl) - Math.min(...inl)) / mean * 100;
-  return { ok: true, r: mean, n: inl.length, diffPct: spreadPct, how: `${inl.length} tosses agree within ${spreadPct.toFixed(1)} %.`, src: "toss" };
+  const sd = Math.sqrt(inl.reduce((a, v) => a + (v - mean) ** 2, 0) / (inl.length - 1));
+  return { ok: true, r: mean, n: inl.length, sd, diffPct: spreadPct, how: `${inl.length} tosses agree within ${spreadPct.toFixed(1)} %.`, src: "toss" };
+}
+// The table spin's radius against the toss's. Each has its own scatter: the standard error of the mean of the two
+// table spins (|a - b| / 2) and of the tosses (SD / sqrt(n)). They agree when the difference is under 3 x the two
+// combined (99.7 % of differences from scatter alone). The limit is never under 5 % of the radius: that is how far two
+// table spins may differ and still count as one result (pickSpins), so a smaller difference says nothing. They measure
+// about different axes (the table spin about the centre the disc rests on, the toss about its balance point), so
+// "differ" means the balance point is off the centre.
+function compareRadii(sp, tp) {
+  if (!sp || !sp.ok || sp.src === "toss" || !tp || !tp.ok) return { ok: false };
+  const seT = sp.diff / 2, seS = Number.isFinite(tp.sd) ? tp.sd / Math.sqrt(tp.n) : 0, sigma = Math.hypot(seT, seS);
+  const diff = tp.r - sp.r, limit = Math.max(3 * sigma, 0.05 * 0.5 * (sp.r + tp.r));
+  return { ok: true, rTable: sp.r, rToss: tp.r, diff, sigma, limit, agree: Math.abs(diff) <= limit };
+}
+
+// ---------------------------------------------------------------- board height from wobbly tosses (information only)
+// In free fall the accelerometer, at p = (rx, ry, h) from the balance point in disc axes, feels only
+//   f = w x (w x p) + a x p          (w = spin vector from the gyro, a = its rate of change)
+// In the disc's plane:
+//   fx = -(wy^2 + wz^2) rx + (wx wy - az) ry + (wx wz + ay) h + ox + cx cos th + cy sin th
+//   fy =  (wx wy + az) rx - (wx^2 + wz^2) ry + (wy wz - ax) h + oy - cx sin th + cy cos th
+// The h terms are there only while the disc wobbles (wx, wy not 0): a flat toss cannot give the height. o = the
+// accelerometer's own offset, the same for every toss; c = air drag, fixed in the air for each toss, so it turns the
+// other way as seen from the disc (th = angle turned). The force along the axis is not used: air drag on the up-and-down
+// motion acts along it, and the model has no term for that. One linear least squares fit over all tosses, readings with
+// the gyro in range only; a second pass drops readings over 3.5 x the typical error (a repeated reading), as fitSpin does.
+function heightRows(seg, dt, Q) {
+  const S = seg.s.slice(6, -6), n = S.length, K = 3, out = [];       // K: a = (w[i+3] - w[i-3]) / 6 readings
+  const rot = v => (Q ? M3.mv(Q, v) : v), wOf = s => rot([s[2] * D2R, s[3] * D2R, s[1] * D2R]);
+  let th = 0;
+  for (let i = 0; i < n; i++) {
+    if (i > 0) th += 0.5 * (S[i - 1][1] + S[i][1]) * D2R * dt;
+    if (i < K || i >= n - K) continue;
+    let clip = false;
+    for (let j = i - K; j <= i + K; j++) if (S[j][7]) clip = true;
+    const span = (S[i + K][0] - S[i - K][0]) * dt;
+    if (clip || !(span > 0) || span > 4 * K * dt) continue;            // the gyro maxed out, or a gap in the readings
+    const w = wOf(S[i]), w1 = wOf(S[i + K]), w0 = wOf(S[i - K]), al = [0, 1, 2].map(k => (w1[k] - w0[k]) / span);
+    const f = rot([S[i][4] * GMS, S[i][5] * GMS, S[i][6] * GMS]), [wx, wy, wz] = w, c = Math.cos(th), s = Math.sin(th);
+    out.push([[-(wy * wy + wz * wz), wx * wy - al[2], wx * wz + al[1], 1, 0, c, s],
+              [wx * wy + al[2], -(wx * wx + wz * wz), wy * wz - al[0], 0, 1, -s, c], f[0], f[1]]);
+  }
+  return out;
+}
+// The fit over a list of tosses (each a list of rows): x = [rx, ry, h, ox, oy, then cx, cy per toss].
+function heightLsq(rowsList) {
+  const T = rowsList.length, P = 5 + 2 * T, idx = (j, k) => (k < 5 ? k : 5 + 2 * j + (k - 5));
+  const all = [];
+  rowsList.forEach((rows, j) => rows.forEach(r => all.push([j, r])));
+  const fit = list => {
+    const A = Array.from({ length: P }, () => new Array(P).fill(0)), b = new Array(P).fill(0);
+    for (const [j, [rx, ry, yx, yy]] of list) for (const [r, y] of [[rx, yx], [ry, yy]]) for (let p = 0; p < 7; p++) {
+      const ip = idx(j, p); b[ip] += r[p] * y;
+      for (let q = 0; q < 7; q++) A[ip][idx(j, q)] += r[p] * r[q];
+    }
+    return { A, x: list.length * 2 > P + 20 ? solve(A, b) : null };
+  };
+  const resid = (x, [j, [rx, ry, yx, yy]]) => {
+    let ex = yx, ey = yy;
+    for (let p = 0; p < 7; p++) { ex -= rx[p] * x[idx(j, p)]; ey -= ry[p] * x[idx(j, p)]; }
+    return Math.hypot(ex, ey);
+  };
+  let f = fit(all);
+  if (!f.x) return null;
+  const e1 = all.map(u => resid(f.x, u)), sig1 = Math.sqrt(e1.reduce((a, v) => a + v * v, 0) / all.length);
+  const keep = all.filter((u, k) => e1[k] <= 3.5 * sig1);
+  const f2 = fit(keep);
+  if (f2.x) f = f2;
+  const used = f2.x ? keep : all, ssr = used.reduce((a, u) => a + resid(f.x, u) ** 2, 0), dof = 2 * used.length - P;
+  const eh = new Array(P).fill(0); eh[2] = 1;
+  const inv = solve(f.A, eh);                                          // column h of the inverse of the normal matrix
+  const sdH = inv && dof > 0 ? Math.sqrt(Math.max(0, ssr / dof * inv[2])) : Infinity;
+  return { x: f.x, h: f.x[2], sdH, n: used.length, rms: Math.sqrt(ssr / Math.max(1, used.length)) / GMS };
+}
+// The height from every usable toss (in free fall, at least one whole turn, a real spin). The uncertainty is the larger
+// of the fit's own (residual scatter x the normal matrix) and a leave-one-toss-out (jackknife) estimate: the readings
+// of one toss are not independent (a slow push of air), but separate tosses are. Q (optional) turns the tosses' disc
+// axes into the axes of a new placement. No number is given when the uncertainty is over 1 mm: the board sits a few
+// millimetres from the balance point, so a looser result says nothing useful.
+const HEIGHT_SD_MAX = 0.001, WOBBLY = 0.05;      // WOBBLY: in-plane spin 5 % of the spin, about a 1.5 degree wobble
+function fitHeight(segs, fits, dt, Q) {
+  const pairs = segs.map((s, i) => [s, fits[i]]).filter(([, f]) => f && f.k >= 1 && f.rpm >= 90 && Math.abs(f.az) <= 0.15);
+  const out = { ok: false, h: null, sd: null, sdRaw: NaN, sdFit: NaN, sdJack: NaN, n: pairs.length, nWobbly: pairs.filter(([, f]) => f.wob >= WOBBLY).length, why: "" };
+  if (pairs.length < 3) { out.why = `Needs 3 tosses in free fall (${pairs.length} so far).`; return out; }
+  const rows = pairs.map(([s]) => heightRows(s, dt, Q)).filter(r => r.length >= 40);
+  const all = rows.length >= 3 ? heightLsq(rows) : null;
+  if (!all) { out.why = "The maths could not separate the parts of the force."; return out; }
+  const hs = rows.map((_, j) => heightLsq(rows.filter((__, k) => k !== j))).filter(Boolean).map(r => r.h);
+  const T = hs.length, mh = hs.reduce((a, v) => a + v, 0) / Math.max(1, T);
+  out.sdFit = all.sdH;
+  out.sdJack = T >= 3 ? Math.sqrt((T - 1) / T * hs.reduce((a, v) => a + (v - mh) ** 2, 0)) : Infinity;
+  out.sdRaw = Math.max(out.sdFit, out.sdJack); out.hRaw = all.h; out.r = Math.hypot(all.x[0], all.x[1]); out.rms = all.rms;
+  if (!(out.sdRaw <= HEIGHT_SD_MAX)) {
+    out.why = out.nWobbly < 2 ? "The wobble was too small to work out the board's height."
+      : `The tosses don't agree on the height (± ${(out.sdRaw * 1000).toFixed(1)} mm, limit ± ${(HEIGHT_SD_MAX * 1000).toFixed(0)} mm).`;
+    return out;
+  }
+  Object.assign(out, { ok: true, h: all.h, sd: out.sdRaw });
+  return out;
 }
 
 // Disc-frame series of a spin segment, and the part of it that is a free spin on the table: from 0.15 s after the
@@ -823,7 +937,15 @@ class VirtualDisc {
     this.biasB = o.biasB || [0.45, -2.50, -0.85];
     this.accOff = o.accOff || [0.004, -0.003, -0.0075];
     const ra = (o.rDirDeg ?? 25) * D2R, rr = o.rTrue ?? 0.009;
-    this.rDisc = [rr * Math.cos(ra), rr * Math.sin(ra), 0];
+    // rDisc: the IMU from the disc's centre (where it rests on a table), with hTrue its height above the balance point.
+    // cmOff: the balance point's in-plane offset from the centre (tape, battery). A table spin turns about the centre,
+    // a toss about the balance point, so the toss sees the IMU at tossP. Both default to 0: the old behaviour.
+    this.rDisc = [rr * Math.cos(ra), rr * Math.sin(ra), o.hTrue ?? 0];
+    const cm = o.cmOff || [0, 0];
+    this.tossP = [this.rDisc[0] - cm[0], this.rDisc[1] - cm[1], this.rDisc[2]];
+    // I3 / I1 of the disc, for a wobbling toss. An assumption: any flat body has exactly 2 (perpendicular-axis
+    // theorem); a golf disc's rim depth makes it a little less.
+    this.inertia = o.spinInertia ?? 1.9;
     this.table = { tilt: (o.tableTiltDeg ?? 1.2) * D2R, dir: (o.tableDirDeg ?? 30) * D2R };
     const v4 = o.v4 ?? true;
     // the calibration it has stored: by default the one "cal" made on a table sloping calTableDeg (so R is nearly right)
@@ -844,6 +966,7 @@ class VirtualDisc {
   T() { const { tilt, dir } = this.table; return M3.mm(M3.rz(dir), M3.mm(M3.ry(tilt), M3.rz(-dir))); }
   D() { return M3.mm(this.T(), M3.mm(M3.rz(this.ph.yaw), M3.mm(M3.rx(this.ph.flip), M3.ry(this.ph.tip)))); }
   // ---- motions: {still:s} {turn:deg, sec} {flip:sec} {tip:deg, sec} {untip:sec} {hand:sec} {spin:rpm, dir:-1|1, decay, visc, catchAt}
+  //      {toss:rpm, air:s, dir, wobble:deg, wobbleDir:deg} (wobble: the half-angle of the cone the disc's axis traces)
   script(list) { this.queue.push(...list); return this; }
   idle() { return !this.cur && !this.queue.length; }
   nextMotion() {
@@ -856,7 +979,8 @@ class VirtualDisc {
     if (m.tip != null) { const a0 = this.ph.tip, a1 = m.tip * D2R; return { kind: "move", hand: true, dur: m.sec || 1, t: 0, f: x => { this.ph.tip = a0 + (a1 - a0) * ease(x); } }; }
     if (m.untip != null) { const a0 = this.ph.tip; return { kind: "move", hand: true, dur: m.untip || 1, t: 0, f: x => { this.ph.tip = a0 * (1 - ease(x)); } }; }
     if (m.hand != null) return { kind: "hand", dur: m.hand, t: 0 };
-    if (m.toss != null) return { kind: "toss", t: 0, dur: 0.2 + (m.air ?? 0.55) + 0.15, w0: m.toss * RPM * (m.dir ?? -1), air: m.air ?? 0.55, w: 0, free: false };
+    if (m.toss != null) return { kind: "toss", t: 0, dur: 0.2 + (m.air ?? 0.55) + 0.15, w0: m.toss * RPM * (m.dir ?? -1), air: m.air ?? 0.55, w: 0, free: false,
+                                 wob: (m.wobble ?? 0) * D2R, ph: (m.wobbleDir ?? 0) * D2R, wxy: [0, 0] };
     if (m.spin != null) return { kind: "spin", t: 0, dur: 60, w0: m.spin * RPM * (m.dir ?? -1), decay: m.decay ?? 9, visc: m.visc ?? 0.12, catchAt: m.catchAt ?? null, flick: 0.12, w: 0, stopAt: null };
     return { kind: "still", dur: 0.1, t: 0 };
   }
@@ -879,8 +1003,17 @@ class VirtualDisc {
       let w1 = w0 + al * dt; if (!m.free && m.t >= tUp && Math.sign(w1) !== Math.sign(w0)) w1 = 0;
       m.w = w1; const wm = 0.5 * (w0 + w1);
       this.ph.yaw += wm * dt;
-      wD = [0, 0, wm]; const p = this.rDisc;
-      aK = [-wm * wm * p[0] - al * p[1], -wm * wm * p[1] + al * p[0], 0];
+      // A wobble is an in-plane spin W on top of the spin. The hand starts it while lifting and the catch stops it. In the
+      // air no torque acts, so (Euler's equations, I1 = I2) it turns at (I3/I1 - 1) x the spin, as seen from the disc.
+      // tan(cone angle) = I1 W / (I3 w). With no wobble this is exactly the flat toss: w x (w x p) + a x p.
+      const W = this.inertia * Math.abs(m.w0) * Math.tan(m.wob);
+      const amp = m.t < tUp ? m.t / tUp : m.free ? 1 : Math.max(0, 1 - (m.t - tUp - m.air) / 0.15);
+      m.ph += (this.inertia - 1) * wm * dt;
+      const x0 = m.wxy, x1 = [W * amp * Math.cos(m.ph), W * amp * Math.sin(m.ph)];
+      m.wxy = x1;
+      const wv = [0.5 * (x0[0] + x1[0]), 0.5 * (x0[1] + x1[1]), wm], av = [(x1[0] - x0[0]) / dt, (x1[1] - x0[1]) / dt, al], p = this.tossP;
+      wD = wv;
+      aK = V.add(V.cross(wv, V.cross(wv, p)), V.cross(av, p));
       if (m.free) { const dr = 0.02 * GMS; aK[0] += dr * Math.cos(-this.ph.yaw); aK[1] += dr * Math.sin(-this.ph.yaw); }   // drag, fixed in the air
       else aK[2] += (m.t < tUp ? 0.5 : 1.0) * GMS;                                                       // the hand lifting / catching
     } else if (m && m.kind === "spin") {
@@ -1026,12 +1159,13 @@ class VirtualDisc {
   statusPacket() { return encodeStatus(this.fw); }
   // Truth, for the tests: the board direction that reads "up" on a level surface, the table slope, the gyro zero error.
   truth() { return { nLevel: V.unit(V.add(M3.mtv(this.M, [0, 0, 1]), this.accOff)), nGeom: M3.row(this.M, 2), front: M3.row(this.M, 0),
-                     tauDeg: this.table.tilt * R2D, biasB: this.biasB.slice(), r: V.norm(this.rDisc), M: this.M.slice() }; }
+                     tauDeg: this.table.tilt * R2D, biasB: this.biasB.slice(), r: Math.hypot(this.rDisc[0], this.rDisc[1]),
+                     rToss: Math.hypot(this.tossP[0], this.tossP[1]), h: this.tossP[2], M: this.M.slice() }; }
 }
 
 G.DiscCalMath = { D2R, R2D, GMS, RPM, CLIP, V, M3, Cx, median, wrap180, matFromQuat, quatFromMat, calR, parseInfo, parseStatus, CALF,
-  encodeSet, decodeSet, validateSet, expectAfterSet, infoMatches, describeR, buildR, keepYawR, StillTracker, viewRun, SpinCollector,
-  prepSpin, solve, fitSpin, pickSpins, centripCheck, TossCollector, fitToss, pickTosses, readPose, halfTurn, labelDown, frontFrom, turnsCheck, biasFrom, CalEngine,
+  encodeSet, decodeSet, validateSet, expectAfterSet, infoMatches, describeR, buildR, keepYawR, nearestBoardAxis, mixDeg, StillTracker, viewRun, SpinCollector,
+  prepSpin, solve, fitSpin, pickSpins, centripCheck, TossCollector, fitToss, pickTosses, compareRadii, heightRows, heightLsq, fitHeight, readPose, halfTurn, labelDown, frontFrom, turnsCheck, biasFrom, CalEngine,
   encodeInfo, encodeStatus, VirtualDisc, rng };
 })(typeof window !== "undefined" ? window : globalThis);
 </script>
@@ -1529,7 +1663,7 @@ const STEPS = [
         const fr = M.frontFrom(p, P.half.n);
         if (fr.tipDeg > 90) return bad(p, "Label up, please – then lift the edge opposite the USB port.");
         if (!fr.ok) return bad(p, fr.tipDeg < 15 ? `It is tipped only ${fr.tipDeg.toFixed(0)}°. Lift the far edge higher (about 5 cm).` : `It is tipped ${fr.tipDeg.toFixed(0)}° – too steep. Use a lower support.`);
-        Object.assign(P, { F: p.id, front: fr, newR: M.buildR(P.half.n, fr.f), frontSet: true, choice: "front", msg: null, phase: "decided" }); S.dirty = true;
+        Object.assign(P, { F: p.id, front: fr, newR: M.buildR(P.half.n, M.nearestBoardAxis(P.half.n, fr.f)), frontSet: true, choice: "front", msg: null, phase: "decided" }); S.dirty = true;
       } else if (P.phase === "v3pose") {
         const p = newestPose(q => q.seq1 > P.v3Since);
         const ok = !!p && !p.open === false && V.ang(V.unit(p.a), P.half.n) < 10;
@@ -1553,6 +1687,8 @@ const STEPS = [
       // decide / front / decided / v3
       const g = h.grade, err = h.err.toFixed(1);
       let res = surf + verdict("good", `✓ Flipped: it reads upside down (${P.down.ang.toFixed(1)}° from exactly opposite).`);
+      const mixed = M.mixDeg(engine.R) > 10;
+      if (mixed) res += verdict("warn", `The disc's sideways axes are turned ${M.mixDeg(engine.R).toFixed(0)}° from the sensor's own.`, "That hides it when the sensor maxes out on a hard throw. Fix it: it takes one press, and the phone's “Set front” may need redoing once.");
       if (g === "good") res += verdict("good", `✓ The placement is already good: the disc's “up” is ${err}° from the true up (limit 1.5°).`,
         "Nothing needs changing here.", "So the stored calibration is right – no need to redo it.");
       else if (g === "ok") res += verdict("warn", `The placement is ${err}° off – small.`, "Angles (hyzer, nose) can be off by up to that much; speed and spin are not affected. Fixing it is recommended.");
@@ -1573,7 +1709,8 @@ const STEPS = [
       }
       let ask = "";
       if (P.phase === "decide") {
-        if (g === "good") ask = btn("keepPlacement", "Keep it (recommended)", "primary big") + (v4 ? btn("setFront", "Also set the front (optional)", "big") : "");
+        if (g === "good" && v4 && M.mixDeg(engine.R) > 10) ask = btn("fixPlacement", "Fix it (recommended)", "primary big") + btn("keepPlacement", "Keep it", "big");
+        else if (g === "good") ask = btn("keepPlacement", "Keep it (recommended)", "primary big") + (v4 ? btn("setFront", "Also set the front (optional)", "big") : "");
         else if (v4) ask = btn("fixPlacement", g === "ok" ? "Fix it (recommended)" : "Fix it", "primary big") + btn("setFront", "Fix it and set the front", "big") + (g === "ok" ? btn("keepPlacement", "Keep it") : "");
         else ask = btn("v3start", "Redo the placement", "primary big") + (g === "ok" ? btn("keepPlacement", "Keep it") : "");
       }
@@ -1591,7 +1728,8 @@ const STEPS = [
   // ---------------------------------------------------------------- 4 spin radius
   { key: "spin", nav: "Spin radius", sub: "toss · ruler · skip",
     enter() {
-      S.Sp = { since: engine.lastSeq, fits: [], seen: new Set(), tfits: [], tseen: new Set(), pick: null, use: false, ruler: S.Sp ? S.Sp.ruler : "", sc: null };
+      S.Sp = { since: engine.lastSeq, fits: [], seen: new Set(), tfits: [], tseen: new Set(), pick: null, use: false, ruler: S.Sp ? S.Sp.ruler : "", sc: null,
+               hset: [], height: null, cmp: null };
       if (!S.v4 && (S.sens0 || 5) < 5 && !S.sensChanged) { S.sensChanged = true; sendText("sens 5"); }    // old firmware: no counting table spins as throws
     },
     tick() {
@@ -1602,12 +1740,22 @@ const STEPS = [
         Sp.fits.push(M.fitSpin(seg, Rfit(), engine.biasBoard(), dt()));
         Sp.pick = M.pickSpins(Sp.fits); S.dirty = true;
       }
+      let newToss = false;
       for (const seg of engine.tosses.done) {
         if (seg.seq0 <= Sp.since || Sp.tseen.has(seg.id)) continue;
         Sp.tseen.add(seg.id);
-        Sp.tfits.push(M.fitToss(seg, dt())); S.dirty = true;
+        const f = M.fitToss(seg, dt());
+        Sp.tfits.push(f); Sp.hset.push({ seg, f }); S.dirty = true; newToss = true;
+      }
+      // The board height: the tosses are kept in the disc's stored axes, and Q turns them into the axes of the true "up"
+      // that step 3 measured, even when the old placement was kept. A tilt of the axes moves part of the in-plane
+      // offset into the height (tilt in radians x the spin radius), so the closest "up" gives the best height.
+      if (newToss) {
+        const Rh = S.P && S.P.newR ? S.P.newR : S.P && S.P.half ? M.keepYawR(S.P.half.n, engine.R) : engine.R;
+        Sp.height = M.fitHeight(Sp.hset.map(x => x.seg), Sp.hset.map(x => x.f), dt(), M3.mm(Rh, M3.T(engine.R)));
       }
       const tp = M.pickTosses(Sp.tfits);                 // tosses measure about the in-flight axis: preferred
+      Sp.cmp = M.compareRadii(M.pickSpins(Sp.fits), tp);
       if (tp.ok) Sp.pick = tp;
       else if (Sp.pick && Sp.pick.src === "toss") Sp.pick = M.pickSpins(Sp.fits);
       const spinning = !!engine.spins.seg;
@@ -1620,6 +1768,8 @@ const STEPS = [
           <p><b>Best – a "pizza toss":</b> hold the disc flat, label up, give it a <b>gentle spin with a flick of the wrist</b> and toss it
             <b>straight up about a foot</b>, then catch it. About <b>2–5 turns a second</b> – the spin gauge should stay under 380 rpm.
             Do it <b>3–5 times</b>; each one is checked below. (In the air the disc spins about its own balance point, which is exactly the distance the disc needs.)</p>
+          <p class="muted"><b>To check it:</b> also spin it flat on the table twice and let it stop by itself. The page then shows both results side by side.
+            <b>Optional – the board's height:</b> toss it spinning with a <b>deliberate wobble</b> (tip your wrist as you let go), catch it, and repeat 3 times.</p>
           <p class="muted">Or: type a ruler measurement (centre of the disc to the centre of the sensor board), or Skip – the disc keeps learning it from gentle throws.</p>` };
       const rows = Sp.fits.map((f, k) => `<tr><td>${k + 1}</td><td class="r">${fmt(f.peakRpm)}</td><td class="r">${fmt(f.sec, 1)} s</td>
         <td class="r">${f.r > 0 ? (f.r * 1000).toFixed(2) + " mm" : "–"}</td><td class="r">${Number.isFinite(f.rms) ? (f.rms * 1000).toFixed(0) + " mg" : "–"}</td>
@@ -1641,7 +1791,7 @@ const STEPS = [
         const rl = Number(Sp.ruler), rulerOk = rl >= 2 && rl <= 20;
         v.detail = `<h3>Ruler</h3><p class="note">Centre of the disc to the centre of the sensor board, in mm:
           <input type="number" id="rulerIn" min="0" max="40" step="0.5" value="${Sp.ruler}">
-          ${Sp.ruler !== "" && !rulerOk ? '<span class="warn-t">Expected 2–20 mm.</span>' : ""}</p>` + ttable + table;
+          ${Sp.ruler !== "" && !rulerOk ? '<span class="warn-t">Expected 2–20 mm.</span>' : ""}</p>` + ttable + table + compareHtml() + heightHtml() + reportAsk();
         v.next = rulerOk ? { label: `Use ${rl} mm ▸`, enabled: true, act: "useRuler" } : { label: "Next ▸", enabled: false };
         v.skip = { act: "skipRadius", label: `Skip – keep ${storedR > 0 ? (storedR * 1000).toFixed(2) + " mm" : "no radius"} and keep learning` };
         return v;
@@ -1658,7 +1808,7 @@ const STEPS = [
         : `<span class="warn-t">Your ruler says ${ruler} mm, ${Math.abs(ruler - r * 1000).toFixed(1)} mm different. Measure from the disc's balance point, not the centre of the label.</span>`) : "";
       v.result = verdict("good", `✓ Spin radius: ${rmm} mm`, `${pk.how || `Two spins agree within ${pk.diffPct.toFixed(1)} %.`} ${cmp}`) +
         (!S.v4 ? verdict("warn", "This firmware can't store it.", "Update the disc's firmware, then run this page again to save it. (Or let the disc measure it itself below.)") : "");
-      v.detail = ttable + table + `<h3>Optional: check with a ruler</h3><p class="note">Distance from the disc's balance point (where it balances on a fingertip) to the centre of the sensor chip, in mm:
+      v.detail = compareHtml() + heightHtml() + ttable + table + reportAsk() + `<h3>Optional: check with a ruler</h3><p class="note">Distance from the disc's balance point (where it balances on a fingertip) to the centre of the sensor chip, in mm:
         <input type="number" id="rulerIn" min="0" max="40" step="0.5" value="${Sp.ruler}"> ${rulerTxt}</p>` + (!S.v4 ? spincalHtml() : "");
       v.next = { label: S.v4 ? `Use ${rmm} mm ▸` : "Next ▸", enabled: true, act: "useRadius" };
       v.skip = { act: "spinMore", label: "Measure again" };
@@ -1752,18 +1902,20 @@ const STEPS = [
       if (!S.v4) {
         v.instr = `<p>The placement${S.P && S.P.v3 && S.P.v3.ok ? " was redone and saved by the disc itself" : " was kept"}. This firmware can't store the gyro zero error or the spin radius${radiusChosen() ? ` (${(radiusChosen() * 1000).toFixed(2)} mm)` : ""} – update the firmware, then run this page again.</p>`;
         v.result = Sv.state === "finished" ? verdict("good", "✓ Finished.", "Throw detection is back to normal. You can close this page.") : "";
+        v.ask = btn("downloadReport", "Download calibration report");
         v.detail = table; v.next = { label: Sv.state === "finished" ? "Close" : "Finish ▸", enabled: true, act: "finish" };
         return v;
       }
       const sensNow = engine.info ? engine.info.sens : 5;
       if (Sv.state === "ready" || Sv.state === "failed") {
         v.instr = `<p>Everything below goes into the disc's memory and stays there when it is switched off.</p>`;
-        v.ask = btn("save", "Save to the disc", "primary big") + (sensNow !== 5 ? `<label class="note" style="font-size:15px"><input type="checkbox" id="sens5" ${Sv.sens5 ? "checked" : ""}> Also set throw detection to level 5 (real throws; it is ${sensNow} now)</label>` : "");
+        v.ask = btn("save", "Save to the disc", "primary big") + btn("downloadReport", "Download calibration report") + (sensNow !== 5 ? `<label class="note" style="font-size:15px"><input type="checkbox" id="sens5" ${Sv.sens5 ? "checked" : ""}> Also set throw detection to level 5 (real throws; it is ${sensNow} now)</label>` : "");
         v.result = Sv.state === "failed" ? verdict("bad", "✗ " + Sv.res.why, "Try again.") : "";
         v.detail = table; v.next = null; v.back = true;
         return v;
       }
       if (Sv.state === "saving") return { ...v, result: verdict("wait", "Saving…"), detail: table, next: null };
+      v.ask = btn("downloadReport", "Download calibration report");
       v.result = verdict("good", "✓ Saved on the disc.", "Read back from the disc: the values below are what it now uses.") +
         (S.P && S.P.choice === "front" ? verdict("warn", "Redo “Set front” in the phone app once", "The disc's axes now have a fixed front, so the phone's old front direction is off.") : "") +
         (Sv.state === "finished" ? verdict("good", "✓ Finished.", "Throw detection is back on. Open the phone app or the simulator and throw.") : "");
@@ -1830,6 +1982,64 @@ function spincalHtml() {
   return `<h3>Optional: let the disc measure it itself</h3><p class="note">Its own method reads a little high on a slowing spin and REPLACES the radius it has stored.
     Use it only if this firmware stays on the disc for a while.</p><div class="ask">${btn("spincal", "Let the disc measure it", "small")}</div>${t}`;
 }
+// ---- step 4 extras: the two radius tests side by side, the board height, the calibration report
+const mm2 = r => (r * 1000).toFixed(2) + " mm";
+const reportAsk = () => `<div class="ask">${btn("downloadReport", "Download calibration report", "small")}</div>`;
+function compareHtml() {
+  const Sp = S.Sp;
+  if (!Sp.fits.length && !Sp.tfits.length) return "";
+  const sp = M.pickSpins(Sp.fits), tp = M.pickTosses(Sp.tfits), c = Sp.cmp;
+  const row = (name, ok, r, n, sd) => `<tr><td>${name}</td><td class="r">${ok ? mm2(r) : "–"}</td><td class="r">${ok ? n : "not done yet"}</td>
+    <td class="r">${ok && Number.isFinite(sd) ? "± " + mm2(sd) : "–"}</td></tr>`;
+  const tbl = `<div class="tw"><table class="t"><thead><tr><th>Test</th><th class="r">Spin radius</th><th class="r">Used</th><th class="r">Scatter</th></tr></thead><tbody>
+    ${row("Table spin", sp.ok, sp.r, "2 spins", sp.ok ? sp.diff / Math.SQRT2 : NaN)}${row("Toss", tp.ok, tp.r, `${tp.n} tosses`, tp.sd)}</tbody></table></div>`;
+  let res;
+  if (c && c.ok && c.agree) res = verdict("good", `✓ The table spin and the toss agree: ${mm2(Math.abs(c.diff))} apart (limit ${mm2(c.limit)}).`,
+    "", "The limit comes from how much each test scatters by itself.");
+  else if (c && c.ok) res = verdict("warn", `The table spin and the toss differ by ${mm2(Math.abs(c.diff))} (limit ${mm2(c.limit)}).`,
+    "The toss turns about the disc's balance point, the table spin about the centre it rests on. So the balance point is off the centre – for example the tape or the battery makes one side heavier.",
+    "The disc needs the toss value: in flight it spins about its balance point.");
+  else res = `<p class="note">Do both a table spin and a toss to compare them.</p>`;
+  return `<h3>Table spin and toss, side by side</h3>` + tbl + res;
+}
+function heightHtml() {
+  const H = S.Sp.height, todo = "Toss it spinning with a deliberate wobble (tip your wrist as you let go), catch it, and repeat a few times.";
+  let body;
+  if (H && H.ok) body = verdict("good", `Board height above the balance point: ${sgn(H.h * 1000, 1)} mm (${H.sd < 0.00005 ? "± less than 0.1" : "± " + (H.sd * 1000).toFixed(1)} mm)`,
+    H.h >= 0 ? "The board sits that far above the disc's balance point, on the label side." : "The minus sign means the board sits below the balance point, away from the label.",
+    `From ${H.n} tosses. For your information only: the disc does not use this number. It goes into the report.`);
+  else if (H) body = verdict("wait", H.why, H.nWobbly < 2 || H.n < 3 ? todo : "Toss it a few more times.");
+  else body = `<p class="note">${todo}</p>`;
+  return `<h3>Board height (optional)</h3>` + body;
+}
+// The calibration report: what each test found, as one JSON file. A test that was not done gives null, never 0.
+function buildReport() {
+  const I = engine.info, Sp = S.Sp, P = S.P;
+  const mmR = r => Math.round(r * 1e6) / 1000, num = (v, d) => (Number.isFinite(v) ? +v.toFixed(d) : null);
+  const sp = Sp ? M.pickSpins(Sp.fits) : { ok: false }, tp = Sp ? M.pickTosses(Sp.tfits) : { ok: false }, c = Sp ? M.compareRadii(sp, tp) : { ok: false };
+  const H = Sp && Sp.height, used = radiusChosen();
+  // the board's tilt from the half turn of step 3 (the true "up" in board axes), whatever was chosen there
+  const d = P && P.half ? M.describeR(M.keepYawR(P.half.n, engine.R)) : null;
+  return {
+    report: "DiscTracker calibration", reportVersion: 1, date: new Date().toISOString(),
+    firmware: I ? { logVersion: I.logVer, calibrationCommands: I.v4 } : null,
+    tableSpinRadius: sp.ok ? { mm: mmR(sp.r), spins: 2, scatterMm: mmR(sp.diff / Math.SQRT2), errorMg: num((sp.pair[0].rms + sp.pair[1].rms) / 2 * 1000, 1) } : null,
+    tossRadius: tp.ok ? { mm: mmR(tp.r), tosses: tp.n, scatterMm: Number.isFinite(tp.sd) ? mmR(tp.sd) : null } : null,
+    radiusComparison: c.ok ? { differenceMm: mmR(c.diff), limitMm: mmR(c.limit), verdict: c.agree ? "agree" : "differ" } : null,
+    radiusUsed: used ? { mm: mmR(used), from: Sp.useRuler ? "ruler" : Sp.pick && Sp.pick.src === "toss" ? "toss" : "table spin" } : null,
+    boardTilt: d ? { degFromFlat: num(d.off, 2), chipSide: d.chipDown ? "down" : "up", storedErrorDeg: num(P.half.err, 2) } : null,
+    boardHeight: H && H.ok ? { mm: mmR(H.h), uncertaintyMm: mmR(H.sd), tosses: H.n } : null,
+    boardHeightNote: H && !H.ok ? H.why : null,
+    accelOffsetMg: P && P.down ? num(P.down.zOffMg, 1) : null,
+  };
+}
+function downloadReport() {
+  const rep = buildReport(), url = URL.createObjectURL(new Blob([JSON.stringify(rep, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = `disctracker-calibration-${rep.date.slice(0, 19).replace(/:/g, "-")}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
 async function spincalStart() {
   if (!confirm("The disc will replace its stored spin radius with its own measurement. Continue?")) return;
   S.Sp.sc = { state: "run", t0: now() }; S.dirty = true;
@@ -1883,8 +2093,10 @@ const ACT = {
   useRadius: () => { S.Sp.use = true; S.Sp.useRuler = null; S.Sp.skipped = false; next(); },
   useRuler: () => { const mm = Number(S.Sp.ruler); if (!(mm >= 2 && mm <= 20)) return; S.Sp.use = true; S.Sp.useRuler = mm / 1000; S.Sp.skipped = false; next(); },
   spinMore: () => { S.Sp.pick = null; S.Sp.fits = S.Sp.fits.map(f => ({ ...f, ok: false, reasons: [["Set aside.", "Measured again."]] }));
-                    S.Sp.tfits = S.Sp.tfits.map(f => ({ ...f, ok: false, reasons: [["Set aside.", "Measured again."]] })); S.dirty = true; },
+                    S.Sp.tfits = S.Sp.tfits.map(f => ({ ...f, ok: false, reasons: [["Set aside.", "Measured again."]] }));
+                    S.Sp.hset = []; S.Sp.height = null; S.Sp.cmp = null; S.dirty = true; },
   spincal: () => spincalStart(),
+  downloadReport: () => downloadReport(),
   retryApply: () => runApplyForTest(),
   skipVerifySpin: () => { S.Vf.skippedSpin = true; S.Vf.phase = "done"; S.dirty = true; },
   save: () => doSave(),
@@ -1956,6 +2168,7 @@ window.discCal = {
   act(name) { const f = ACT[name]; if (!f) throw new Error("no action " + name); return f(); },
   next() { const nb = $("nextBtn"); if (nb.disabled) return false; nb.dataset.act ? ACT[nb.dataset.act]() : next(); return true; },
   goTo,
+  report: () => buildReport(),
 };
 </script>
 </body>

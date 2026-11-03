@@ -288,6 +288,7 @@
       <div class="result-head"><div class="label">Disc it flies with</div></div>
       <select id="bagSel" class="field"></select>
       <label class="lbl">Name<input id="dName" class="field" type="text" maxlength="40"></label>
+      <label class="lbl">Weight with the tracker (g)<input id="dWeight" class="field" type="number" inputmode="decimal" step="1" min="120" max="200" value="175"></label>
       <div class="inputs4">
         <label>Speed<input id="dSpeed" type="number" inputmode="decimal" step="0.5" min="1" max="15"></label>
         <label>Glide<input id="dGlide" type="number" inputmode="decimal" step="0.5" min="1" max="7"></label>
@@ -305,6 +306,8 @@
       <div class="inputs2">
         <label>Wind <span>mph</span><input id="windMph" type="number" inputmode="decimal" step="1" min="0" value="0"></label>
         <label>Release height <span>ft</span><input id="relHeight" type="number" inputmode="decimal" step="0.5" min="0" value="4"></label>
+        <label>Air temp <span>°F</span><input id="airTemp" type="number" inputmode="decimal" step="1" value="59"></label>
+        <label>Elevation <span>ft</span><input id="airElev" type="number" inputmode="decimal" step="100" value="0"></label>
       </div>
       <div class="label" style="margin-top:12px">Wind from</div>
       <div class="row windRow">
@@ -614,7 +617,7 @@
   <button data-tab="rec"><span class="ic">💾</span>Data</button>
 </nav>
 
-<script src="flight.js?v=2026-10-21b"></script>
+<script src="flight.js?v=2026-11-01"></script>
 <script>
 "use strict";
 // ---- protocol (must match disc_tracker_v2.ino) ----
@@ -775,11 +778,20 @@ function loadHistory() { try { return JSON.parse(localStorage.getItem(HKEY)) || 
 function saveHistory(h) { try { localStorage.setItem(HKEY, JSON.stringify(h.slice(-200))); } catch {} }
 let history = loadHistory();
 
-function chipsFor(flags) {
+// The numbers to show for a throw: rebuilt from the raw readings when the 3D page has done that (t.reb), else the
+// disc's own. The disc's own speed stops rising around 25-45 mph, because the force it adds up is cut off at 16 g.
+const shown = t => t.reb ? { ...t, ...t.reb } : t;
+// Spin known only as a floor: the gyro maxed out and nothing else measured it. Wobble is worked out with the spin, so it
+// would read high by the real spin over the floor: it is unknown then, not a number.
+const spinFloor = t => t.reb ? !!t.reb.atLeast : !!(t.flags & F.GYRO_Z_SAT) && !(t.flags & F.SPIN_FROM_ACC);
+const spinTxt = t => (spinFloor(t) ? "≥" : "") + fmt(shown(t).spin);
+const wobbleTxt = t => spinFloor(t) ? "–" : fmt(shown(t).wobble, 1);
+
+function chipsFor(flags, rebuilt) {
   const out = [];
-  if (flags & F.GYRO_Z_SAT && !(flags & F.SPIN_FROM_ACC)) out.push("Gyro maxed – spin is a minimum");
-  if (flags & F.ACCEL_SAT) out.push("Accelerometer maxed – speed unreliable");
-  if (flags & F.NO_STATIC) out.push("Disc wasn't still before throw – angles less certain");
+  if (flags & F.GYRO_Z_SAT && !(flags & F.SPIN_FROM_ACC) && !rebuilt) out.push("Gyro maxed – spin is a minimum and wobble unknown. Calibrate the spin radius for a real number");
+  if (flags & F.ACCEL_SAT && !rebuilt) out.push("Accelerometer maxed – the disc's speed reads low and its angles off on a hard throw. The 3D tab rebuilds them: keep it open while you throw");
+  if (flags & F.NO_STATIC) out.push("Disc wasn't still before throw – angles less certain, and a run-up's speed isn't counted");
   if (flags & F.NO_RELEASE) out.push("Release not detected cleanly");
   if (flags & F.SHORT_FLIGHT) out.push("Short flight window");
   return out;
@@ -788,19 +800,22 @@ function chipsFor(flags) {
 let lastShown = null;
 function showResult(t, isNew) {
   lastShown = t;
+  const v = shown(t);
   $("resultEmpty").classList.add("hidden");
-  $("rSpeed").textContent = fmt(t.speed, 1);
-  $("rSpin").textContent = fmt(t.spin);
-  $("rHyzer").textContent = signed(t.hyzer);
-  $("rNose").textContent = signed(t.nose);
-  $("rLaunch").textContent = signed(t.launch);
-  $("rWobble").textContent = fmt(t.wobble, 1);
+  $("rSpeed").textContent = fmt(v.speed, 1);
+  $("rSpin").textContent = spinTxt(t);
+  $("rHyzer").textContent = signed(v.hyzer);
+  $("rNose").textContent = signed(v.nose);
+  $("rLaunch").textContent = signed(v.launch);
+  $("rWobble").textContent = wobbleTxt(t);
   $("resultMeta").textContent = `#${t.seq} · ${new Date(t.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` +
     (Number.isFinite(t.peak) ? ` · peak ${t.peak.toFixed(1)} g` : "");
-  const chips = chipsFor(t.flags);
+  const chips = chipsFor(t.flags, !!t.reb);
   const SRC = { 1: "Spin from the drag-wave method (gyro maxed)", 2: "Spin from the centripetal method (gyro maxed)",
-                3: "Spin: drag-wave and centripetal methods agree (gyro maxed)" };
-  if (SRC[t.spinSrc]) chips.unshift(SRC[t.spinSrc]);
+                3: "Spin: drag-wave and centripetal methods agree (gyro maxed)", 4: "Spin from the wobble's turning (gyro maxed)",
+                5: "Spin: wobble and centripetal methods agree (gyro maxed)" };
+  if (SRC[t.spinSrc] && !t.reb) chips.unshift(SRC[t.spinSrc]);
+  if (t.reb) chips.unshift(`Rebuilt from the raw readings. The disc's own: ${fmt(t.speed, 1)} mph, ${fmt(t.spin)} rpm, hyzer ${signed(t.hyzer)}°, nose ${signed(t.nose)}°, launch ${signed(t.launch)}°`);
   if (t.ccw !== undefined) chips.unshift(t.ccw ? "Spin: counter-clockwise (RH forehand / LH backhand)" : "Spin: clockwise (RH backhand / LH forehand)");
   if (t.sens && t.sens < 5) chips.unshift(`Test reading (sensitivity ${t.sens}) – not a full throw measurement`);
   if (t.lowConf) chips.unshift("Low confidence – a hard pull the disc nearly rejected; check the 3D replay");
@@ -815,8 +830,9 @@ function showResult(t, isNew) {
 }
 
 function simulatorText(t) {
-  return `Speed ${fmt(t.speed, 1)} mph, Spin ${fmt(t.spin)} rpm, Hyzer ${signed(t.hyzer)}°, ` +
-         `Nose ${signed(t.nose)}°, Launch ${signed(t.launch)}°, Wobble ${fmt(t.wobble, 1)}°`;
+  const v = shown(t);
+  return `Speed ${fmt(v.speed, 1)} mph, Spin ${spinTxt(t)} rpm, Hyzer ${signed(v.hyzer)}°, ` +
+         `Nose ${signed(v.nose)}°, Launch ${signed(v.launch)}°, Wobble ${wobbleTxt(t)}°`;
 }
 
 // TechDisc's public simulator (techdisc.com/simulate) reads a throw from its link:
@@ -827,7 +843,7 @@ function techdiscUrl(t) {
   // the disc chosen in the Simulate tab; before that tab has been set up, the first disc in the bag
   let d = (typeof bag !== "undefined" && bag[0]) || { speed: 12, glide: 5, turn: -1 };
   try { if ($("dSpeed").value !== "") d = readDisc(); } catch {}
-  return techdiscSimUrl(t, d);
+  return techdiscSimUrl(shown(t), d);
 }
 $("tdBtn").onclick = () => { if (lastShown) window.open(techdiscUrl(lastShown), "_blank", "noopener"); };
 
@@ -843,16 +859,23 @@ async function copyResult() {
     try { ok = document.execCommand("copy"); } catch {}
     ta.remove();
   }
-  $("copyBtn").textContent = ok ? "Copied ✓" : text;
-  setTimeout(() => { $("copyBtn").textContent = "Copy numbers for the simulator"; }, 2500);
+  $("copyBtn").textContent = ok ? "Copied ✓" : "Couldn't copy";
+  setTimeout(() => { $("copyBtn").textContent = "Copy numbers"; }, 2500);
 }
 
 function renderHistory() {
   const body = $("histBody");
-  body.innerHTML = history.slice().reverse().map(t =>
-    `<tr class="hrow" data-key="${t.key}"><td>${t.seq}${t.sens && t.sens < 5 ? "ᵗ" : ""}</td><td>${fmt(t.speed, 1)}</td><td>${fmt(t.spin)}</td><td>${signed(t.hyzer)}</td><td>${signed(t.nose)}</td><td>${signed(t.launch)}</td><td>${fmt(t.wobble, 1)}</td><td><a class="tdLink" href="${techdiscUrl(t)}" target="_blank" rel="noopener">↗</a></td></tr>`
-  ).join("");
-  body.querySelectorAll(".hrow").forEach(r => r.onclick = e => { if (e.target.closest("a")) return; simThrowKey = r.dataset.key; showTab("sim"); });
+  body.innerHTML = history.slice().reverse().map(t => { const v = shown(t);
+    return `<tr class="hrow" data-key="${t.key}"><td>${t.seq}${t.sens && t.sens < 5 ? "ᵗ" : ""}${t.bounce ? "ᵇ" : ""}</td><td>${fmt(v.speed, 1)}${t.reb ? "*" : ""}</td><td>${spinTxt(t)}</td><td>${signed(v.hyzer)}</td><td>${signed(v.nose)}</td><td>${signed(v.launch)}</td><td>${wobbleTxt(t)}</td><td><a class="tdLink" href="${techdiscUrl(t)}" target="_blank" rel="noopener">↗</a></td></tr>`;
+  }).join("");
+  // tapping a throw shows it: on the Throw tab, and its replay in the 3D tab if that still has it
+  body.querySelectorAll(".hrow").forEach(r => r.onclick = e => {
+    if (e.target.closest("a")) return;
+    const t = history.find(h => h.key === r.dataset.key); if (!t) return;
+    simThrowKey = t.key; showTab("sim");
+    sim3dShow = { dt: "show", speed: t.speed, spin: t.spin, seq: t.seq }; sim3dPost(sim3dShow);
+    if (sim3dReady) sim3dShow = null;
+  });
   $("histEmpty").classList.toggle("hidden", history.length > 0);
   $("histTable").classList.toggle("hidden", history.length === 0);
 }
@@ -865,9 +888,25 @@ function addThrow(s) {
   const key = s.v === 3 ? `b${s.boot}-${s.seq}` : `${s.seq}-${s.t}`;
   if (history.some(h => h.key === key)) return;
   const t = { ...s, key, at: Date.now(), sens: lastStatus ? lastStatus.sens : 5 };
+  // A roll, a bounce or a drop out of the net can count as a new throw (the disc is still spinning when it lands). A real
+  // new throw takes longer than this to get back to, and doesn't lose this much on the one before. Kept in the history,
+  // marked, but it doesn't take the real throw's place. Not right after connecting: stored throws arrive all at once.
+  const prev = [...history].reverse().find(h => !h.bounce);
+  if (prev && t.at - prev.at < BOUNCE_S * 1000 && t.at - connectedAt > 6000 && (t.spin < 0.6 * prev.spin || t.speed < 0.5 * prev.speed)) t.bounce = true;
   history.push(t); saveHistory(history);
-  renderHistory(); showResult(t, true);
+  renderHistory();
+  if (t.bounce) { showBanner("That looked like a bounce or a roll, not a new throw: it's in the history, marked ᵇ.", ""); setTimeout(() => showBanner("", ""), 6000); return; }
+  showResult(t, true);
   showBanner("", "");                      // clear "result on its way"
+}
+const BOUNCE_S = 10;                       // a flight's own time plus the landing: a second "throw" this soon is suspect
+let connectedAt = 0;
+// The 3D page rebuilt a throw from its raw readings: the disc's own numbers say which one it is.
+function onRebuilt(m) {
+  const t = [...history].reverse().slice(0, 40).find(h => Math.abs(h.speed - m.disc.speed) < 0.06 && Math.abs(h.spin - m.disc.spin) < 1 && Math.abs(h.hyzer - m.disc.hyzer) < 0.06);
+  if (!t) return;
+  t.reb = m.six; saveHistory(history); renderHistory();
+  if (lastShown && lastShown.key === t.key) showResult(t, false);
 }
 
 // ---- banner: reconnecting / result pending / rejected throw ----
@@ -1062,6 +1101,7 @@ async function connectLoop() {
 }
 
 async function setupGatt() {
+  connectedAt = Date.now();
   const server = await device.gatt.connect();
   const svc = await server.getPrimaryService(SVC);
 
@@ -1506,10 +1546,10 @@ function renderBag(selectName) {
   $("bagSel").value = i >= 0 ? i : 0;
   fillDisc(bag[+$("bagSel").value] || bag[0]);
 }
-function fillDisc(b) { if (!b) return; $("dName").value = b.name; $("dSpeed").value = b.speed; $("dGlide").value = b.glide; $("dTurn").value = b.turn; $("dFade").value = b.fade; }
+function fillDisc(b) { if (!b) return; $("dName").value = b.name; $("dSpeed").value = b.speed; $("dGlide").value = b.glide; $("dTurn").value = b.turn; $("dFade").value = b.fade; $("dWeight").value = b.weightG || 175; }
 function readDisc() {
   const num = (id, lo, hi) => Math.max(lo, Math.min(hi, parseFloat($(id).value) || 0));
-  return { name: $("dName").value.trim() || "Disc", speed: num("dSpeed", 1, 15), glide: num("dGlide", 1, 7), turn: num("dTurn", -5, 2), fade: num("dFade", 0, 6) };
+  return { name: $("dName").value.trim() || "Disc", speed: num("dSpeed", 1, 15), glide: num("dGlide", 1, 7), turn: num("dTurn", -5, 2), fade: num("dFade", 0, 6), weightG: Math.max(120, Math.min(200, parseFloat($("dWeight").value) || 175)) };
 }
 $("bagSel").onchange = () => { const v = $("bagSel").value; if (v === "new") { fillDisc({ name: "", speed: 9, glide: 5, turn: -1, fade: 2 }); $("dName").focus(); } else fillDisc(bag[+v]); };
 $("bagSave").onclick = () => {
@@ -1525,7 +1565,7 @@ $("bagDel").onclick = () => {
 
 function renderSimSources() {
   const opts = history.slice().reverse().map(t =>
-    `<option value="${t.key}">#${t.seq}${t.sens && t.sens < 5 ? " (test)" : ""} · ${fmt(t.speed, 1)} mph · ${new Date(t.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</option>`);
+    `<option value="${t.key}">#${t.seq}${t.sens && t.sens < 5 ? " (test)" : ""} · ${fmt(shown(t).speed, 1)} mph · ${new Date(t.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</option>`);
   $("simSource").innerHTML = opts.join("") + `<option value="custom">Custom numbers</option>`;
   $("simSource").value = simThrowKey && history.some(h => h.key === simThrowKey) ? simThrowKey : (history.length ? history[history.length - 1].key : "custom");
   loadSimThrow();
@@ -1534,7 +1574,7 @@ function loadSimThrow() {
   const key = $("simSource").value, t = history.find(h => h.key === key);
   simThrowKey = t ? key : null;
   const defs = loadJSON(SKEY, {});
-  const src = t || defs.custom || { speed: 55, spin: 900, hyzer: 0, nose: 0, launch: 10, wobble: 2 };
+  const src = t ? shown(t) : defs.custom || { speed: 55, spin: 900, hyzer: 0, nose: 0, launch: 10, wobble: 2 };
   [["sSpeed", "speed"], ["sSpin", "spin"], ["sHyzer", "hyzer"], ["sNose", "nose"], ["sLaunch", "launch"], ["sWobble", "wobble"]]
     .forEach(([id, k]) => { $(id).value = Number.isFinite(src[k]) ? Math.round(src[k] * 10) / 10 : ""; });
   const sim = (t && t.sim) || defs;
@@ -1542,11 +1582,14 @@ function loadSimThrow() {
   let style = sim.style || defs.style || "rhbh";
   if (t && t.ccw !== undefined && STYLES[style][1] !== t.ccw) style = t.ccw ? (style[0] === "r" ? "rhfh" : "lhbh") : (style[0] === "r" ? "rhbh" : "lhfh");
   $("simStyle").value = style;
-  $("spinNote").textContent = t && t.ccw !== undefined
-    ? `Disc measured: ${t.ccw ? "counter-clockwise" : "clockwise"} spin (from above).` : "";
+  if (t && spinFloor(t)) $("sWobble").value = "";
+  $("spinNote").textContent = (t && t.ccw !== undefined
+    ? `Disc measured: ${t.ccw ? "counter-clockwise" : "clockwise"} spin (from above).` : "") +
+    (t && spinFloor(t) ? " The spin is only a minimum (the gyro maxed out), so the flight below turns more than a real spin would." : "");
   renderBag(sim.disc ? sim.disc.name : (defs.disc && defs.disc.name));
   if (sim.disc) fillDisc(sim.disc);
   $("windMph").value = sim.windMph ?? 0; $("windFrom").value = sim.windFrom ?? 0; $("relHeight").value = sim.heightFt ?? 4;
+  $("airTemp").value = sim.tempF ?? 59; $("airElev").value = sim.elevFt ?? 0;
   [...document.querySelectorAll(".windBtn")].forEach(b => b.classList.toggle("on", +b.dataset.from === +$("windFrom").value));
 }
 $("simSource").onchange = loadSimThrow;
@@ -1562,13 +1605,14 @@ function readSim() {
     nose: n("sNose") || 0, launch: n("sLaunch") || 0, wobble: n("sWobble") || 0,
     style: $("simStyle").value, ccw: STYLES[$("simStyle").value][1], disc: readDisc(),
     windMph: Math.max(0, n("windMph") || 0), windFrom: ((n("windFrom") || 0) % 360 + 360) % 360,
-    heightFt: Math.max(0, n("relHeight") || 4),
+    heightFt: Math.max(0, n("relHeight") || 4), tempF: n("airTemp") || 59, elevFt: n("airElev") || 0,
+    rho: DiscFlight.airDensity(n("airTemp") || 59, n("airElev") || 0),
   };
 }
 
 $("simBtn").onclick = () => {
   const p = readSim();
-  const saved = { style: p.style, disc: p.disc, windMph: p.windMph, windFrom: p.windFrom, heightFt: p.heightFt };
+  const saved = { style: p.style, disc: p.disc, windMph: p.windMph, windFrom: p.windFrom, heightFt: p.heightFt, tempF: p.tempF, elevFt: p.elevFt };
   if (simThrowKey) {                              // remember these inputs with this throw
     const t = history.find(h => h.key === simThrowKey);
     if (t) { t.sim = saved; saveHistory(history); }
@@ -1668,13 +1712,13 @@ document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showTab
 // The disc sends every reading only while the tab is open ("bton"); the stream stops ("btoff") as soon as another tab
 // is chosen. Each throw is also saved on the disc: the 3D page confirms the ones it gets and asks for any it missed
 // out of range ("unsent").
-let sim3dReady = false, sim3dOn = false;
+let sim3dReady = false, sim3dOn = false, sim3dShow = null;
 const sim3dFrame = () => $("sim3d");
 function sim3dPost(m, transfer) { const f = sim3dFrame(); if (f && sim3dReady) f.contentWindow.postMessage(m, location.origin, transfer || []); }
 function sim3dOpen() {
   if (!sim3dFrame()) {
     const f = document.createElement("iframe");
-    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-10-29"; f.allow = "fullscreen";
+    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-11-01b"; f.allow = "fullscreen";
     $("sim3dWrap").appendChild(f);
   }
   sizeSim3d();
@@ -1690,7 +1734,8 @@ function sim3dCfg() {
   $("simOptsSum").textContent = `${$("dName").value || "Disc"} ${$("dSpeed").value}/${$("dGlide").value}/${$("dTurn").value}/${$("dFade").value}` +
     (w ? ` · wind ${w} mph from ${$("windFrom").value}°` : " · no wind");
   return { dt: "sim", disc: { name: $("dName").value || "Disc", speed: +$("dSpeed").value || 12, glide: +$("dGlide").value || 5,
-    turn: +$("dTurn").value || 0, fade: +$("dFade").value || 0 }, windMph: +$("windMph").value || 0, windFrom: +$("windFrom").value || 0, heightFt: +$("relHeight").value || 0 };
+    turn: +$("dTurn").value || 0, fade: +$("dFade").value || 0, weightG: +$("dWeight").value || 175 }, windMph: +$("windMph").value || 0, windFrom: +$("windFrom").value || 0, heightFt: +$("relHeight").value || 0,
+    rho: DiscFlight.airDensity(+$("airTemp").value || 59, +$("airElev").value || 0), tracker: device ? device.id : "" };
 }
 function sim3dStream() {
   const want = !!cmdChar && !$("tab-sim").classList.contains("hidden");
@@ -1705,8 +1750,14 @@ function sim3dPacket(v) {
 }
 addEventListener("message", e => {
   if (e.origin !== location.origin || !e.data || e.source !== (sim3dFrame() || {}).contentWindow) return;
-  if (e.data.dt === "ready") { sim3dReady = true; $("sim3dWait").hidden = true; sim3dPost(sim3dCfg()); sim3dStream(); sizeSim3d(); }
+  if (e.data.dt === "ready") {
+    sim3dReady = true; $("sim3dWait").hidden = true; sim3dPost(sim3dCfg()); sim3dStream(); sizeSim3d();
+    if (sim3dShow) { sim3dPost(sim3dShow); sim3dShow = null; }
+    // what was asked for before the frame could hear it was lost: ask again now it can
+    if (sim3dOn && cmdChar) sendCmd("unsent");
+  }
   else if (e.data.dt === "cmd" && typeof e.data.text === "string") sendCmd(e.data.text);
+  else if (e.data.dt === "rebuilt" && e.data.six && e.data.disc) onRebuilt(e.data);
 });
 $("tab-sim").addEventListener("input", () => sim3dPost(sim3dCfg()));
 $("tab-sim").addEventListener("click", e => { if (e.target.closest(".windBtn, #bagSel")) setTimeout(() => sim3dPost(sim3dCfg()), 0); });
@@ -1742,7 +1793,7 @@ function onLogInfo(dv) {
   $("logState").textContent = !ok ? "not available" : full ? "FULL – move the data off" : sessionOn ? `● recording ${fmtTime(secs)}` : looped ? "saving throws" : "ready";
   $("logInfo").innerHTML = !ok ? "Recorder chip not found (old firmware?)."
     : full ? `<b>Memory full – recording stopped.</b> ${used} of ${cap} KB, ${rec} records. Plug into the computer and run <code>py disclab.py export --clear</code>.`
-    : looped ? `Throws are saved as always; the memory has looped, so the oldest are being replaced (${rec} records kept). A full recording needs a download and an erase first.`
+    : looped ? `Throws are saved as always; the memory has looped, so the oldest are being replaced (${rec} records kept), and that includes any full recording still on the disc: download it first if you want it. A new full recording needs a download and an erase.`
     : `${used} of ${cap} KB used (${pct.toFixed(0)}%) · about <b>${fmtTime(left)}</b> of full recording left`;
   $("sessBtn").textContent = sessionOn ? "■ Stop recording" : full || looped ? "Memory full – move the data off first" : "● Record all sensor data";
   $("sessBtn").classList.toggle("on", sessionOn);
@@ -1847,7 +1898,8 @@ $("goRecBtn").onclick = () => $("dlBtn").scrollIntoView({ behavior: "smooth", bl
 // -- parse the disc's binary log (same layout as flash_log.h LogHeader) --
 const END_NAMES = { 1: "impact", 2: "flight window full", 3: "3 s limit" };
 const SRC_NAMES = { 0: "gyro", 1: "drag wave", 2: "centripetal", 3: "wave+centripetal" };
-const FLAG_NAMES = [[2, "gyro maxed"], [4, "accel maxed"], [8, "no release"], [16, "no still moment"], [32, "spin from accel"], [64, "short flight"], [128, "counter-clockwise"]];
+const FLAG_NAMES = [[2, "gyro maxed"], [4, "accel maxed"], [8, "no release"], [16, "no still moment"], [32, "spin from accel"], [64, "short flight"], [128, "counter-clockwise"],
+  [4096, "low confidence"], [8192, "gyro tilt maxed"]];   // 4096, 8192: MetricFlags bits 12 and 13 in throw_metrics.h
 function parseLog(u8) {
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), recs = [];
   let off = 0;
@@ -1858,7 +1910,7 @@ function parseLog(u8) {
       boot: dv.getUint16(off + 16, true), sens: dv.getUint8(off + 18), end: dv.getUint8(off + 19), tMs: dv.getUint32(off + 20, true),
       n: dv.getUint16(off + 24, true), odr: dv.getUint16(off + 26, true) || 416, rel: dv.getUint16(off + 28, true),
       counted: dv.getUint8(off + 32), src: dv.getUint8(off + 33), flags: dv.getUint16(off + 34, true),
-      ver: dv.getUint16(off + 4, true),
+      ver: dv.getUint16(off + 4, true), link: dv.getUint32(off + 196, true),
       speed: f(36), spin: f(40), hyzer: f(44), nose: f(48), launch: f(52), wobble: f(56), peak: f(60),
       bias: [f(76), f(80), f(84)], R: Array.from({ length: 9 }, (_, k) => f(88 + 4 * k)), alsb: f(152) || 0.000488, glsb: f(156) || 0.070, sampleOff: off + 256,
     };
@@ -1874,7 +1926,7 @@ function parseLog(u8) {
     if (r.type === 3) test = r.end;
     r.test = test;
     const tEnd = base + (r.tMs - t0) / 1000;
-    r.t = r.type === 1 ? tEnd - (r.n - 1) / r.odr : tEnd;        // captures store their END time
+    r.t = r.type === 1 || r.type === 5 ? tEnd - (r.n - 1) / r.odr : tEnd;        // captures and flight tails store their END time
     prevT = r.t + r.n / r.odr; prevBoot = r.boot;
     r.u8 = u8;
   }
@@ -1988,7 +2040,7 @@ function drawRec() {
     }
   }
   // min/max per pixel column from the continuous recording, or captures if there is none
-  const src = recs.filter(r => r.type === 1 || r.type === 2);     // overlapping data is identical, so drawing both is fine
+  const src = recs.filter(r => r.type === 1 || r.type === 2 || r.type === 5);     // overlapping data is identical, so drawing both is fine (5: the rest of a throw's flight)
   const cols = Math.max(1, Math.floor(R - L));
   const gMin = new Float32Array(cols).fill(Infinity), gMax = new Float32Array(cols).fill(-Infinity);
   const sMin = new Float32Array(cols).fill(Infinity), sMax = new Float32Array(cols).fill(-Infinity);
@@ -2061,10 +2113,10 @@ const stamp = ms => { const d = new Date(ms), p = n => String(n).padStart(2, "0"
 $("csvAllBtn").onclick = () => {
   if (!view) return;
   const streams = view.recs.filter(r => r.type === 2), useCaps = !streams.length;
-  const src = useCaps ? view.recs.filter(r => r.type === 1) : streams;
+  const src = useCaps ? view.recs.filter(r => r.type === 1 || r.type === 5) : streams;
   const parts = ["time_s,test,from,gyro_x_dps,gyro_y_dps,gyro_z_dps,spin_rpm,accel_x_g,accel_y_g,accel_z_g,accel_total_g,gyro_maxed\n"];
   for (const r of src) {
-    const from = r.type === 1 ? `capture ${r.no}` : "recording", test = TEST_NAMES[r.test] || "";
+    const from = r.type === 1 ? `capture ${r.no}` : r.type === 5 ? `flight of capture ${r.link}` : "recording", test = TEST_NAMES[r.test] || "";
     let chunk = "";
     for (let i = 0; i < r.n; i++) {
       const s = sample(r, i);
@@ -2092,12 +2144,12 @@ function rawCounts(r, i) {
 $("csvRawBtn").onclick = () => {
   if (!view) return;
   const streams = view.recs.filter(r => r.type === 2);
-  const src = streams.length ? streams : view.recs.filter(r => r.type === 1);
+  const src = streams.length ? streams : view.recs.filter(r => r.type === 1 || r.type === 5);
   const parts = ["sample,time_s,test,from,gx (x0.070 = deg/s),gy (x0.070 = deg/s),gz (x0.070 = deg/s)," +
                  "ax (x0.000488 = g),ay (x0.000488 = g),az (x0.000488 = g)\n"];
   let k = 0;
   for (const r of src) {
-    const from = r.type === 1 ? `capture ${r.no}` : "recording", test = TEST_NAMES[r.test] || "";
+    const from = r.type === 1 ? `capture ${r.no}` : r.type === 5 ? `flight of capture ${r.link}` : "recording", test = TEST_NAMES[r.test] || "";
     let chunk = "";
     for (let i = 0; i < r.n; i++, k++) chunk += `${k},${(r.t + i / r.odr).toFixed(4)},${test},${from},${rawCounts(r, i).join(",")}\n`;
     parts.push(chunk);
@@ -2140,12 +2192,15 @@ $("frontBtn").onclick = () => {
 function exportCSV() {
   const head = ["throw", "date", "time", "speed_mph", "spin_rpm", "hyzer_deg", "nose_deg", "launch_deg", "wobble_deg",
                 "peak_g", "spin_dir", "sensitivity", "flags",
+                "rebuilt_speed_mph", "rebuilt_spin_rpm", "rebuilt_hyzer_deg", "rebuilt_nose_deg", "rebuilt_launch_deg", "rebuilt_wobble_deg", "looks_like_bounce",
                 "ref_speed_mph", "ref_spin_rpm", "ref_hyzer_deg", "ref_nose_deg", "ref_launch_deg", "ref_method", "notes"];
   const rows = history.map(t => {
     const d = new Date(t.at);
     return [t.seq, d.toLocaleDateString(), d.toLocaleTimeString(), fmt(t.speed, 1), fmt(t.spin), fmt(t.hyzer, 1), fmt(t.nose, 1),
             fmt(t.launch, 1), fmt(t.wobble, 1), fmt(t.peak, 1), t.ccw === undefined ? "" : (t.ccw ? "ccw" : "cw"),
-            t.sens ?? "", t.flags, "", "", "", "", "", "", ""].join(",");
+            t.sens ?? "", t.flags,
+            ...(t.reb ? [fmt(t.reb.speed, 1), fmt(t.reb.spin), fmt(t.reb.hyzer, 1), fmt(t.reb.nose, 1), fmt(t.reb.launch, 1), t.reb.wobble == null ? "" : fmt(t.reb.wobble, 1)] : ["", "", "", "", "", ""]),
+            t.bounce ? 1 : 0, "", "", "", "", "", "", ""].join(",");
   });
   const csv = head.join(",") + "\n" + rows.join("\n") + "\n";
   const name = `disctracker-throws-${new Date().toISOString().slice(0, 10)}.csv`;

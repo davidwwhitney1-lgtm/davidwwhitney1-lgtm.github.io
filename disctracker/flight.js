@@ -4,7 +4,10 @@
 // ====================================================================
 // Physics, per 4 ms step:
 //   * lift and drag from the angle of attack between the disc plane and
-//     the air (relative to wind), as in published frisbee flight models
+//     the air (relative to wind), as in published frisbee flight models. Past
+//     about 25 deg the disc stalls: lift falls away, to nothing at 90 deg, and
+//     drag rises to that of a flat plate (POST_STALL, cdPost). Below 25 deg the
+//     curves are as they were tuned, so normal flights don't change.
 //   * a pitching moment that depends on airspeed vs the disc's rated speed:
 //     nose-down at high speed (TURN rating) and nose-up at low speed (FADE)
 //   * gyroscopic precession: the spin turns that pitching moment into a slow
@@ -21,9 +24,11 @@
 const TUNE = {
   // tuned 2026-10-07 against typical amateur flights (driver 60 mph ~320-350 ft with
   // an S-curve, putter, midrange, under/overstable shapes). Re-tune with real landings.
-  mass: 0.175, radius: 0.1055, rho: 1.225, inertiaK: 0.6,
+  // mass: the default when the disc has no weight. inertiaK: 7.465e-3 m^2 / r^2 (Wraith, Giljarhus et al. 2022)
+  mass: 0.175, radius: 0.1055, rho: 1.225, inertiaK: 0.67,
   ratedBase: 8, ratedPerSpeed: 1.4,           // rated airspeed m/s = base + per * speed
-  cd0Base: 0.095, cd0PerSpeed: 0.003, cdAlpha: 0.8, alpha0Deg: -2,
+  // past the stall, drag = CD0 + min(cdMax, cdPost sin^2(a - a0)): 2.78 and 1.15 fit both published golf-disc tables above 20 deg
+  cd0Base: 0.095, cd0PerSpeed: 0.003, cdAlpha: 0.8, cdPost: 2.78, cdMax: 1.15, alpha0Deg: -2,
   cl0Base: 0.06, cl0PerGlide: 0.01, clAlpha: 2.2,
   cmAlpha: 0, kTurn: 0.003, kFade: 0.02, switchAt: 0.5, switchWidth: 0.08,
   spinDecayS: 12,
@@ -31,6 +36,23 @@ const TUNE = {
   // Tan & Fuss 2020: wobble settled about 1 s after release). Calibrate with real throws.
   wobbleTauS: 0.5,
 };
+
+// Lift past the stall, against the angle in degrees: the middle of the published Wraith and Firebird tables
+// (Giljarhus, Gooding & Njaerheim 2022, CFD). Air on the disc's top side lifts about 0.65 x as much.
+const POST_STALL = [[30, 1.3], [40, 1.4], [50, 1.05], [60, 0.68], [70, 0.47], [80, 0.22], [90, 0]];
+function liftCoef(alpha, CL0) {
+  const deg = Math.abs(alpha) * 180 / Math.PI, line = CL0 + TUNE.clAlpha * alpha;
+  if (deg <= 25) return line;
+  let post = 0;
+  if (deg <= 30) post = POST_STALL[0][1];
+  else for (let i = 0; i + 1 < POST_STALL.length; i++) {
+    const [a, b] = [POST_STALL[i], POST_STALL[i + 1]];
+    if (deg <= b[0]) { post = a[1] + (b[1] - a[1]) * (deg - a[0]) / (b[0] - a[0]); break; }
+  }
+  if (alpha < 0) post *= -0.65;
+  const u = Math.min(1, (deg - 25) / 5);
+  return line * (1 - u) + post * u;
+}
 
 const v3 = {
   add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
@@ -44,11 +66,13 @@ const v3 = {
 
 // Axes: x = down the throw line, y = LEFT, z = up. Units SI inside, feet out.
 // p = { speedMph, spinRpm, hyzer, nose, launch, wobble (deg, axis-cone angle), ccw,
-//       disc: {speed, glide, turn, fade}, windMph, windFrom (0 head, 90 right, 180 tail), heightFt }
+//       disc: {speed, glide, turn, fade, weightG}, windMph, windFrom (0 head, 90 right, 180 tail), heightFt, rho (kg/m^3, optional) }
 // Each path point: t (s), x/y/z (ft), nx/ny/nz (disc normal), w (wobble now, deg).
 function simulateFlight(p) {
   const T = TUNE, D2R = Math.PI / 180, MPH = 0.44704, FT = 3.28084;
-  const A = Math.PI * T.radius ** 2, d = 2 * T.radius, I = T.inertiaK * T.mass * T.radius ** 2;
+  // the weight the disc flies with, tracker included (7-9 g on the prototype)
+  const mass = p.disc.weightG > 100 && p.disc.weightG < 250 ? p.disc.weightG / 1000 : T.mass;
+  const A = Math.PI * T.radius ** 2, d = 2 * T.radius, I = T.inertiaK * mass * T.radius ** 2;
   const S = p.disc.speed, G = p.disc.glide, TU = p.disc.turn, FA = p.disc.fade;
   const vRated = T.ratedBase + T.ratedPerSpeed * S;
   const CD0 = T.cd0Base - T.cd0PerSpeed * S;
@@ -81,16 +105,17 @@ function simulateFlight(p) {
     const vh = v3.mul(va, 1 / V);
     const alpha = -Math.asin(Math.max(-1, Math.min(1, v3.dot(vh, n))));
     const wob = W0 * Math.exp(-t / T.wobbleTauS);
-    const q = 0.5 * T.rho * V * V;
-    const CL = CL0 + T.clAlpha * alpha;
+    const q = 0.5 * (p.rho > 0.5 && p.rho < 1.6 ? p.rho : T.rho) * V * V;
+    const CL = liftCoef(alpha, CL0);
     const CDw = T.cdAlpha * 0.5 * wob * wob;      // extra drag from the wobble swing
-    const CD = CD0 + T.cdAlpha * (alpha - T.alpha0Deg * D2R) ** 2 + CDw;
+    const a0 = alpha - T.alpha0Deg * D2R, stall = Math.min(1, Math.max(0, (Math.abs(alpha) / D2R - 25) / 10));
+    const CD = CD0 + (1 - stall) * T.cdAlpha * a0 * a0 + stall * Math.min(T.cdMax, T.cdPost * Math.sin(a0) ** 2) + CDw;
     let liftDir = v3.sub(n, v3.mul(vh, v3.dot(n, vh)));
     liftDir = v3.len(liftDir) > 1e-6 ? v3.norm(liftDir) : [0, 0, 1];
-    const force = v3.add(v3.mul(v3.sub(v3.mul(liftDir, CL), v3.mul(vh, CD)), q * A), [0, 0, -9.81 * T.mass]);
+    const force = v3.add(v3.mul(v3.sub(v3.mul(liftDir, CL), v3.mul(vh, CD)), q * A), [0, 0, -9.81 * mass]);
     wobDragLoss += CDw * q * A * V * dt;          // energy the wobble cost (J)
     if (t >= nextRec) { rec(wob); nextRec += 0.02; }
-    vel = v3.add(vel, v3.mul(force, dt / T.mass));
+    vel = v3.add(vel, v3.mul(force, dt / mass));
     pos = v3.add(pos, v3.mul(vel, dt));
 
     const hi = 1 / (1 + Math.exp(-((V / vRated) - T.switchAt) / T.switchWidth));   // 1 = fast
@@ -111,6 +136,13 @@ function simulateFlight(p) {
   rec(W0 * Math.exp(-t / T.wobbleTauS));
   return { path, distFt: Math.hypot(pos[0], pos[1]) * FT, lateralFt: pos[1] * FT, maxHFt: maxH * FT, timeS: t,
            wobbleEnergyJ: wobDragLoss };
+}
+
+// Air density from the temperature and the elevation (standard atmosphere, standard pressure at sea level, dry air).
+// Thin air flies further: 5000 ft is about +10 % distance, a hot day +6 %, a cold one -3 %.
+function airDensity(tempF = 59, elevFt = 0) {
+  const T = (tempF - 32) / 1.8 + 273.15, p = 101325 * Math.pow(1 - 2.25577e-5 * elevFt * 0.3048, 5.25588);
+  return p / (287.05 * T);
 }
 
 // Older firmware (before 2026-10) reported wobble as the angle between the
@@ -138,4 +170,4 @@ function techdiscSimUrl(t, disc) {
   return "https://techdisc.com/simulate?" + q.toString();
 }
 
-window.DiscFlight = { TUNE, v3, simulateFlight, wobbleFromRateAngle, techdiscSimUrl };
+window.DiscFlight = { TUNE, v3, simulateFlight, airDensity, wobbleFromRateAngle, techdiscSimUrl };
