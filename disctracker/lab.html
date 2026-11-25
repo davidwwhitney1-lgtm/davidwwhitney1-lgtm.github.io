@@ -48,6 +48,13 @@
   .chip .ok { color: var(--good); } .chip .no { color: var(--bad); } .chip .q { color: var(--muted); }
   #bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 2px 12px 6px; font-size: 12px; color: var(--muted); }
   #bar b { color: var(--text); }
+  .live { display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; }
+  .live[hidden], button[hidden] { display: none; }
+  .ldot { width: 9px; height: 9px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+  .live.paused .ldot { background: #64748b; box-shadow: none; }
+  #hdrConnect { white-space: nowrap; }
+  #hdrConnect.on { background: var(--good); color: #052e1c; }
+  #lvStats { line-height: 1.6; }
   #cvwrap { position: relative; height: max(700px, calc(100vh - 130px)); margin: 0 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
   #cv { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
   #cv.drag { cursor: grabbing; }
@@ -82,14 +89,31 @@
   <div class="brand">Disc<span>Tracker</span> Lab</div>
   <div class="note">Every reading of a throw on one screen: what the sensor streamed, what the disc decided and when, what the pages rebuild, and – for a simulated throw – what really happened.</div>
   <div class="links"><a href="sim.html">Computer simulator (live data)</a><a href="disc3d.html">3D disc</a><a href="./">Phone app</a><a href="calibrate.html">Calibrate</a></div>
+  <button class="primary" id="hdrConnect" title="Connect to the disc over Bluetooth and see every reading live">Connect to the disc</button>
 </header>
 <div id="wrap">
 <aside id="side">
   <h2>Look at</h2>
   <div class="tabs" id="srcTabs">
+    <button data-src="live">Live from the disc</button>
     <button data-src="throw" class="on">A simulated throw</button>
     <button data-src="hand">Handling (not a throw)</button>
     <button data-src="file">A recording</button>
+  </div>
+
+  <div class="src" id="src-live">
+    <p class="note">Connects to the disc over Bluetooth (Chrome or Edge on a computer) and draws every reading as it arrives, with the
+      disc's own decisions. The whole session stays on this page: scroll or zoom back to any moment, then press <b>Back to live</b>.
+      Close the phone app and the simulator first: the disc talks to one device at a time.</p>
+    <div class="row"><button class="primary" id="lvConnect">Connect to the disc</button><span class="note" id="lvState">Not connected</span></div>
+    <div class="note" id="lvNote"></div>
+    <div class="row"><button id="lvShow">Show the live session</button><button id="lvLive">Back to live</button></div>
+    <div class="note" id="lvStats"></div>
+    <p class="note"><b>Out of range?</b> The disc keeps each throw and the rest of its flight (to the landing, up to 10 s) in its
+      memory. This page reconnects by itself, asks for them, and puts them back in their place in the session.</p>
+    <div class="row"><button id="lvFetch" title="Ask the disc for the throws this page hasn't got (it also asks after every reconnect)">Fetch missed throws</button>
+      <button id="lvSave" title="Every reading of this session, in the disc's log format: open it here again later">Save this session</button></div>
+    <div class="row"><select id="lvFetched" style="width:100%;display:none"></select></div>
   </div>
 
   <div class="src on" id="src-throw">
@@ -170,6 +194,7 @@
 <main id="main">
   <div id="caps"><span class="note">Loading the disc's analysis from the simulator page…</span></div>
   <div id="bar"><span id="barInfo"></span><span style="flex:1"></span>
+    <span id="barLive" class="live" hidden><span class="ldot"></span><b id="barLiveText">Live</b> <button class="small primary" id="barBack" hidden>Back to live</button></span>
     <button class="small" data-zoom="all">Whole recording</button><button class="small" data-zoom="cap">This capture</button>
     <button class="small" data-zoom="pull">Pull and release</button><button class="small" data-zoom="flight">Flight</button>
     <label><input type="checkbox" id="showTruth" checked> truth</label><label><input type="checkbox" id="showRebuilt" checked> rebuilt</label></div>
@@ -196,7 +221,7 @@
 <script src="track.js?v=2026-11-01b"></script>
 <script src="bench/gen.js?v=2026-11-23"></script>
 <script src="bench/handling.js?v=2026-11-23"></script>
-<script src="bench/firmware.js?v=2026-11-23"></script>
+<script src="bench/firmware.js?v=2026-11-25"></script>
 <script src="bench/simcode.js?v=2026-11-23"></script>
 <script>
 "use strict";
@@ -314,18 +339,29 @@ function fileDatasets(recs, name) {
       if (cur && r.seq0 === cur.seq1 && r.boot === cur.boot) { cur.recs.push(r); cur.seq1 += r.n; }
       else { cur = { recs: [r], seq0: r.seq0, seq1: r.seq0 + r.n, boot: r.boot }; parts.push(cur); }
     }
-    // one recording; a gap between parts is marked so the disc's loop starts over there
-    const n = parts.reduce((s, p) => s + p.seq1 - p.seq0, 0), S = new Int16Array(n * 6), gap = new Uint8Array(n), seqAt = new Float64Array(n);
-    let k = 0;
-    for (const p of parts) {
-      if (k) gap[k] = 1;
-      for (const r of p.recs) { S.set(r.S, k * 6); for (let j = 0; j < r.n; j++) seqAt[k + j] = r.seq0 + j; k += r.n; }
-    }
-    const idxOf = (seq, boot) => { for (let i = 0; i < n; i++) if (seqAt[i] === seq) return i; return -1; };
-    const discCaps = caps.map(c => ({ h: c, i: c.seq0 != null ? idxOf(c.seq0) : -1 })).filter(x => x.i >= 0);
-    const first = streams[0];
-    out.push({ kind: "file", name: `${name}: continuous recording, ${(n / (first.rateHz || 418.6) / 60).toFixed(1)} min`, S, gap, rate: first.rateHz || 418.6,
-      info: infoFromHeader(first), file: { discCaps, marks } });
+    // One recording. Readings missing between parts never reached the computer, but the disc had them (a Bluetooth
+    // drop-out, a paused recording: the disc doesn't skip sample numbers when its own sensor queue overflows), so they
+    // stay holes of their real length - times and places stay true - and the disc's loop runs on after each hole as
+    // in the live view. A part from another power-up, or after more than 10 minutes, follows a hole of one reading.
+    const at = [], full = []; let n = 0;
+    parts.forEach((p, k) => {
+      const q = parts[k - 1], d = k ? p.seq0 - q.seq1 : 0;
+      full.push(!!k && q.boot === p.boot && d > 0 && d <= 10 * 60 * 420);
+      n += !k ? 0 : full[k] ? d : 1; at.push(n); n += p.seq1 - p.seq0;
+    });
+    const S = new Int16Array(n * 6), have = new Uint8Array(n), gap = new Uint8Array(n), seqAt = new Float64Array(n).fill(NaN), bootAt = new Int32Array(n).fill(-1);
+    parts.forEach((p, k) => {
+      if (k) gap[at[k]] = 1;
+      if (full[k]) for (let i = at[k] - (p.seq0 - parts[k - 1].seq1), s = parts[k - 1].seq1; i < at[k]; i++, s++) { seqAt[i] = s; bootAt[i] = p.boot; }
+      let i = at[k];
+      for (const r of p.recs) { S.set(r.S, i * 6); have.fill(1, i, i + r.n); for (let j = 0; j < r.n; j++) { seqAt[i + j] = r.seq0 + j; bootAt[i + j] = r.boot; } i += r.n; }
+    });
+    const oneBoot = parts.every(p => p.boot === parts[0].boot);
+    const idxOf = (seq, boot) => { for (let i = 0; i < n; i++) if (seqAt[i] === seq && (oneBoot || bootAt[i] === boot)) return i; return -1; };
+    const discCaps = caps.map(c => ({ h: c, i: c.seq0 != null ? idxOf(c.seq0, c.boot) : -1 })).filter(x => x.i >= 0);
+    const first = streams[0], holes = parts.length > 1;
+    out.push({ kind: "file", name: `${name}: continuous recording, ${(n / (first.rateHz || 418.6) / 60).toFixed(1)} min`, S, gap: holes ? gap : null,
+      have: holes ? have : null, rate: first.rateHz || 418.6, info: infoFromHeader(first), file: { discCaps, marks } });
   }
   for (const c of caps) {
     if (!c.n) continue;
@@ -442,6 +478,7 @@ function show(make) {
   setTimeout(() => {
     try { ds = make(); analyze(); }
     catch (err) { console.error(err); $("caps").innerHTML = `<span class="note" style="color:var(--bad)">That didn't work: ${err.message}</span>`; }
+    lvBar();
     $("busy").style.display = "none";
   }, 20);
 }
@@ -452,12 +489,13 @@ function rulesFor(d) {
 }
 function analyze() {
   if (!ds) return;
+  if (ds.kind === "live") { lvRestartLoop(); return; }         // the live session: the disc's loop again, with the new rules
   const { ver, level } = rulesFor(ds), I = ds.info;
   ds.ver = ver; ds.level = level;
-  ds.fw = FW.run(ds.S, { an: SC, ver, level, alsb: I.alsb, glsb: I.glsb, bias: I.bias, radius: I.radius, locked: I.locked, rateHz: ver >= 6 ? (I.rateHz || (ds.sim ? 418.6 : 0)) : 0, gap: ds.gap });
+  ds.fw = FW.run(ds.S, { an: SC, ver, level, alsb: I.alsb, glsb: I.glsb, bias: I.bias, radius: I.radius, locked: I.locked, rateHz: ver >= 6 ? (I.rateHz || (ds.sim ? 418.6 : 0)) : 0, gap: ds.gap, have: ds.have });
   ds.caps = ds.fw.captures;
   ds.dup = new Uint8Array(ds.S.length / 6);
-  for (let i = 1; i < ds.dup.length; i++) { let same = true; for (let k = 0; k < 6; k++) if (ds.S[i * 6 + k] !== ds.S[(i - 1) * 6 + k]) { same = false; break; } ds.dup[i] = same ? 1 : 0; }
+  for (let i = 1; i < ds.dup.length; i++) { if (ds.have && !(ds.have[i] && ds.have[i - 1])) continue; let same = true; for (let k = 0; k < 6; k++) if (ds.S[i * 6 + k] !== ds.S[(i - 1) * 6 + k]) { same = false; break; } ds.dup[i] = same ? 1 : 0; }
   // the capture to look at: the one holding the true release, else the first counted one, else the first
   sel = -1;
   if (ds.sim && ds.sim.kRel != null) sel = ds.caps.findIndex(c => c.start <= ds.sim.kRel && c.start + (c.nUntrimmed || c.n) > ds.sim.kRel);
@@ -466,19 +504,30 @@ function analyze() {
   renderCaps(); zoom(sel >= 0 ? "cap" : "all"); renderSide();
 }
 $("dVer").onchange = analyze; $("dLevel").onchange = analyze;
-$("dK").onchange = () => { if (ds) { for (const c of ds.caps) delete c.rb; renderSide(); draw(); } };
+$("dK").onchange = () => { if (ds) { if (ds.rbCache) ds.rbCache.clear(); renderSide(); draw(); } };
+// The rebuild of a capture, worked out once (a live session hands out fresh capture objects as readings arrive, so it is
+// kept by the capture's trigger and length, and done again only while the readings after it are still arriving).
 function rebuildOf(c) {
-  if (c.rb !== undefined) return c.rb;
-  c.rb = null; c.rbK = null;
-  const n = Math.min(c.start + c.n + EXTRA, ds.S.length / 6) - c.start;
-  if (n < 100 || !c.R || !c.counted) return null;               // the pages rebuild the throws the disc reports
-  const Sx = ds.S.slice(c.start * 6, (c.start + n) * 6), I = ds.info, R = c.R;
-  const base = { alsb: I.alsb, glsb: I.glsb, bias: I.bias, radius: I.radius, rate: ds.rate, kI: 0.99, odr: 416, biasTol: 1.5 };
-  const o = { iRel: R.iRel != null && R.iRel < c.n ? R.iRel : undefined, spinRpm: R.spin > 0 ? R.spin : undefined };
-  try { c.rb = DiscTrack.reconstruct(Sx, base, o); } catch (err) { console.warn("rebuild", err); c.rbErr = err.message; }
-  const k = parseFloat($("dK").value);
-  if (k > 0) try { c.rbK = DiscTrack.reconstruct(Sx, Object.assign({}, base, { kAero: k }), o); } catch {}
-  return c.rb;
+  if (!c) return null;
+  const avail = Math.min(c.start + c.n + EXTRA, ds.S.length / 6) - c.start;
+  const key = `${c.trig}:${c.n}:${avail}:${ds.ver}`, cache = ds.rbCache || (ds.rbCache = new Map());
+  if (cache.has(key)) { const e = cache.get(key); c.rbK = e.rbK; c.rbErr = e.err; return e.rb; }
+  let rb = null, rbK = null, err = null;
+  if (avail >= 100 && c.R && c.counted) {                       // the pages rebuild the throws the disc reports
+    const Sx = ds.S.slice(c.start * 6, (c.start + avail) * 6), I = ds.info, R = c.R;
+    const base = { alsb: I.alsb, glsb: I.glsb, bias: I.bias, radius: I.radius, rate: ds.rate, kI: 0.99, odr: 416, biasTol: 1.5 };
+    const o = { iRel: R.iRel != null && R.iRel < c.n ? R.iRel : undefined, spinRpm: R.spin > 0 ? R.spin : undefined };
+    try { rb = DiscTrack.reconstruct(Sx, base, o); } catch (e) { console.warn("rebuild", e); err = e.message; }
+    const k = parseFloat($("dK").value);
+    if (k > 0) try { rbK = DiscTrack.reconstruct(Sx, Object.assign({}, base, { kAero: k }), o); } catch {}
+  }
+  cache.set(key, { rb, rbK, err });
+  c.rbK = rbK; c.rbErr = err;
+  return rb;
+}
+// The disc's own results for a capture (a recording with the disc's captures in it, or a live session)
+function discRecordOf(c) {
+  return c && ds && ds.file && ds.file.discCaps ? ds.file.discCaps.find(d => d.i === c.start) || null : null;
 }
 
 // ---------------------------------------------------------------- the captures strip
@@ -495,7 +544,7 @@ function renderCaps() {
     b.innerHTML = c.unfinished ? `<span class="q">${tt} s: still capturing at the end</span>` :
       c.counted ? `<span class="ok">✓</span> ${tt} s: counted${c.lowConf ? " (low confidence)" : ""}${c.R && c.R.speed ? `, ${c.R.speed.toFixed(1)} mph` : ""}` :
       c.quiet ? `<span class="q">${tt} s: handling, ignored</span>` : `<span class="no">✗</span> ${tt} s: not counted – ${WHY[c.why] || "?"}`;
-    b.onclick = () => { sel = k; renderCaps(); zoom("cap"); renderSide(); };
+    b.onclick = () => { sel = k; lvFollow(false); renderCaps(); zoom("cap"); renderSide(); };
     el.appendChild(b);
   });
 }
@@ -550,10 +599,13 @@ function seriesSet() {
   P.push({ title: "Speed (mph)", w: 0.85, min0: true, series: [
     ds.sim && ds.sim.speed && showT && { name: "true speed", color: COL.truth, dash: [4, 3], get: i => ds.sim.speed[i] * MPH, truth: true },
     R && R.speedTrace && { name: "the disc's add-up", color: COL.disc, get: capArr(R.speedTrace), width: 1.5 },
-    rb && rb.vel && { name: "rebuilt", color: COL.rebuilt, width: 1.5, get: i => { const k = i - c.start - rb.iStart; return k >= 0 && k < rb.vel.length && i - c.start <= rb.info.iRel + 40 ? Math.hypot(...rb.vel[k]) * MPH : NaN; } },
-    rbK && rbK.vel && { name: "rebuilt with the drag speedometer", color: "#fcd34d", width: 1.5, dash: [6, 3], get: i => { const k = i - c.start - rbK.iStart; return k >= 0 && k < rbK.vel.length && i - c.start <= rbK.info.iRel + 40 ? Math.hypot(...rbK.vel[k]) * MPH : NaN; } },
+    rb && rb.vel && { name: "rebuilt", color: COL.rebuilt, width: 1.5, get: i => { const v = rb.vel[i - c.start - rb.iStart]; return v && i - c.start <= rb.info.iRel + 40 ? Math.hypot(v[0], v[1], v[2]) * MPH : NaN; } },
+    rbK && rbK.vel && { name: "rebuilt with the drag speedometer", color: "#fcd34d", width: 1.5, dash: [6, 3], get: i => { const v = rbK.vel[i - c.start - rbK.iStart]; return v && i - c.start <= rbK.info.iRel + 40 ? Math.hypot(v[0], v[1], v[2]) * MPH : NaN; } },
   ].filter(Boolean) });
   P.push({ title: "What the disc was doing", w: 0.32, state: true, series: [] });
+  // a reading that never reached this computer is drawn as a break in the lines, not as a zero
+  const have = ds.have;
+  if (have) for (const p of P) for (const s of p.series) { const g0 = s.get; s.get = i => have[i] ? g0(i) : NaN; }
   return P;
 }
 
@@ -576,17 +628,27 @@ function markers() {
     if (c.tail) { if (c.tail.landAt >= 0) add(c.tail.landAt, "landing (disc)", "#f87171", [4, 2], 2); add(c.tail.end, `flight recording ends (${c.tail.why})`, "#64748b", [1, 3], 3); }
     if (rb && rb.info) { add(c.start + rb.info.iRel, "release (rebuilt)", COL.rebuilt, null, 1); if (rb.info.iImp < rb.wz.length - 2) add(c.start + rb.info.iImp, "end of flight (rebuilt)", COL.rebuilt, [3, 2], 3); }
   }
+  // The disc's own record, only where it differs from what was worked out here (the side panel says when they agree).
+  const relHere = i => ds.caps.some(q => q.rel === i || (q.R && q.R.found && q.start + q.R.iRel === i));
   if (ds.file && ds.file.discCaps) for (const d of ds.file.discCaps) {
-    add(d.i + 415, `disc's record: trigger${d.h.counted ? " (counted)" : ""}`, "#22d3ee", [2, 2], 3);
-    if (d.h.rel !== 0xFFFF) add(d.i + d.h.rel, "disc's record: release", "#22d3ee", null, 3);
+    const here = ds.caps.find(q => q.start === d.i), dRel = d.h.rel !== 0xFFFF ? d.i + d.h.rel : -1;
+    if (!here || !here.counted !== !d.h.counted) add(d.i + 415, `disc's record: trigger${d.h.counted ? " (counted)" : ""}`, "#22d3ee", [2, 2], 3);
+    if (dRel >= 0 && !relHere(dRel)) add(dRel, "disc's record: release", "#22d3ee", null, 3);
   }
-  if (ds.file && ds.file.cap) { const h = ds.file.cap; if (h.rel !== 0xFFFF) add(h.rel, "disc's record: release", "#22d3ee", null, 3); if (h.liveRel !== 0xFFFF && h.liveRel !== h.rel) add(h.liveRel, "disc's record: live release", "#22d3ee", [2, 2], 3); }
+  if (ds.file && ds.file.cap) { const h = ds.file.cap; if (h.rel !== 0xFFFF && !relHere(h.rel)) add(h.rel, "disc's record: release", "#22d3ee", null, 3); if (h.liveRel !== 0xFFFF && h.liveRel !== h.rel && !relHere(h.liveRel)) add(h.liveRel, "disc's record: live release", "#22d3ee", [2, 2], 3); }
   return M;
 }
 function bands() {                                            // shaded stretches: the still moment, the flight window
   const B = [], c = ds.caps[sel], R = c && c.R;
   if (R && R.stillAt >= 0) B.push({ a: c.start + R.stillAt, b: c.start + R.stillAt + R.win, color: "rgba(52, 211, 153, 0.12)", label: "still moment" });
   if (R && R.f1 > R.f0) B.push({ a: c.start + R.f0, b: c.start + R.f1, color: "rgba(96, 165, 250, 0.10)", label: "flight window (spin, wobble)" });
+  if (ds.have) {                                                // readings that never reached this computer
+    const h = ds.have, a1 = Math.min(h.length - 1, Math.ceil(view.i1));
+    for (let i = Math.max(0, Math.floor(view.i0)); i <= a1; i++) if (!h[i]) {
+      let j = i; while (j < a1 && !h[j + 1]) j++;
+      B.push({ a: i, b: j + 1, color: "rgba(148, 163, 184, 0.13)", label: "readings missing" }); i = j;
+    }
+  }
   return B;
 }
 
@@ -608,13 +670,28 @@ function draw() {
   g.clearRect(0, 0, W, H);
   legendHits = [];
   if (!ds) { g.fillStyle = "#a7b2c0"; g.font = "14px system-ui"; g.fillText("Pick a throw on the left.", 20, 30); return; }
+  if (!ds.info || !ds.fw) {                                     // live, before the disc's first readings
+    layout = null; g.fillStyle = "#a7b2c0"; g.font = "14px system-ui"; g.fillText("Waiting for the disc's readings…", 20, 30); return;
+  }
   panels = seriesSet();
   const n = ds.S.length / 6, i0 = Math.max(0, view.i0), i1 = Math.min(n - 1, view.i1), xw = W - LEFT - RIGHT;
-  const X = i => LEFT + (i - i0) / Math.max(1, i1 - i0) * xw;
-  const totW = panels.reduce((s, p) => s + p.w, 0), avail = H - TOPM - AXIS, gap = 8;
-  let y = TOPM;
-  layout = { X, i0, i1, xw, panels: [] };
+  // (following a live session that is still shorter than the window, the readings fill it from the left)
+  const e1 = ds.kind === "live" && LV.follow ? Math.max(i1, view.i1) : i1;
+  const X = i => LEFT + (i - i0) / Math.max(1, e1 - i0) * xw;
   const M = markers(), B = bands();
+  // marker labels across the top: each on the first line where it fits, with as many lines as that takes (5 at most)
+  g.font = "10.5px system-ui";
+  const labs = [], used = [];
+  for (const m of M.slice().sort((a, b) => a.i - b.i)) {
+    const x = X(m.i); if (x < LEFT - 2 || x > LEFT + xw + 2) continue;
+    const w = g.measureText(m.label).width + 6, lx = Math.max(LEFT, Math.min(x + 3, LEFT + xw - w));
+    let row = 0; while (row < 4 && (used[row] || []).some(([a, b]) => lx < b && lx + w > a)) row++;
+    (used[row] = used[row] || []).push([lx, lx + w]); labs.push({ m, lx, row });
+  }
+  const top0 = Math.max(TOPM, 8 + used.length * 11);
+  const totW = panels.reduce((s, p) => s + p.w, 0), avail = H - top0 - AXIS, gap = 8;
+  let y = top0;
+  layout = { X, i0, i1: e1, xw, top: top0, panels: [] };
   for (const p of panels) {
     const h = (avail - gap * (panels.length - 1)) * p.w / totW, top = y, bot = y + h;
     layout.panels.push({ p, top, bot });
@@ -671,18 +748,11 @@ function draw() {
     }
     y = bot + gap;
   }
-  // marker labels at the top, staggered
+  // the marker labels, on the lines worked out above
   g.font = "10.5px system-ui"; g.textAlign = "left";
-  const used = [[], [], [], []];
-  for (const m of M.slice().sort((a, b) => a.i - b.i)) {
-    const x = X(m.i); if (x < LEFT - 2 || x > LEFT + xw + 2) continue;
-    const w = g.measureText(m.label).width + 6; let row = 0;
-    while (row < 3 && used[row].some(([a, b]) => x < b && x + w > a)) row++;
-    used[row].push([x, x + w]);
-    g.fillStyle = m.color; g.fillText(m.label, Math.min(x + 3, LEFT + xw - w), 10 + row * 6.5 + (row ? 3 : 0));
-  }
+  for (const { m, lx, row } of labs) { g.fillStyle = m.color; g.fillText(m.label, lx, 10 + row * 11); }
   // time axis
-  const t0 = i0 / ds.rate, t1 = i1 / ds.rate; g.fillStyle = "#94a3b8"; g.textAlign = "center"; g.font = "10.5px system-ui";
+  const t0 = i0 / ds.rate, t1 = e1 / ds.rate; g.fillStyle = "#94a3b8"; g.textAlign = "center"; g.font = "10.5px system-ui";
   for (const t of niceTicks(t0, t1, Math.max(3, Math.floor(xw / 90)))) { const x = X(t * ds.rate); g.fillText(`${fmtTick(t)} s`, x, H - 6); }
 }
 function drawSeries(g, s, X, Y, i0, i1, xw) {
@@ -747,10 +817,11 @@ function zoom(what) {
   view.i0 = Math.max(0, Math.floor(a)); view.i1 = Math.min(n - 1, Math.ceil(b)); if (view.i1 - view.i0 < 20) { view.i0 = 0; view.i1 = n - 1; }
   draw();
 }
-for (const b of document.querySelectorAll("[data-zoom]")) b.onclick = () => zoom(b.dataset.zoom);
+for (const b of document.querySelectorAll("[data-zoom]")) b.onclick = () => { lvFollow(false); zoom(b.dataset.zoom); };
 $("showTruth").onchange = draw; $("showRebuilt").onchange = () => { draw(); renderSide(); };
 cv.addEventListener("wheel", e => {
   if (!ds || !layout) return; e.preventDefault();
+  lvFollow(false);                                            // looking back in a live session: stop following
   const r = cv.getBoundingClientRect(), x = e.clientX - r.left, n = ds.S.length / 6;
   const at = view.i0 + (x - LEFT) / layout.xw * (view.i1 - view.i0), k = e.deltaY > 0 ? 1.25 : 0.8;
   let a = at - (at - view.i0) * k, b = at + (view.i1 - at) * k;
@@ -765,7 +836,8 @@ cv.addEventListener("pointerdown", e => {
   dragging = { x: e.clientX, i0: view.i0, i1: view.i1 }; cv.classList.add("drag"); cv.setPointerCapture(e.pointerId);
 });
 cv.addEventListener("pointermove", e => {
-  if (dragging && ds) {
+  if (dragging && ds && layout) {
+    if (Math.abs(e.clientX - dragging.x) > 3) lvFollow(false);
     const n = ds.S.length / 6, span = dragging.i1 - dragging.i0, d = -(e.clientX - dragging.x) / layout.xw * span;
     let a = dragging.i0 + d; a = Math.max(0, Math.min(n - 1 - span, a)); view.i0 = Math.round(a); view.i1 = Math.round(a + span); draw();
   }
@@ -773,17 +845,18 @@ cv.addEventListener("pointermove", e => {
 });
 cv.addEventListener("pointerup", () => { dragging = null; cv.classList.remove("drag"); });
 cv.addEventListener("pointerleave", () => { tip.style.display = "none"; });
-cv.addEventListener("dblclick", () => zoom("cap"));
+cv.addEventListener("dblclick", () => { lvFollow(false); zoom("cap"); });
 window.addEventListener("resize", () => draw());
 function hover(e) {
   if (!ds || !layout || dragging) { tip.style.display = "none"; return; }
   const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
   if (x < LEFT || x > LEFT + layout.xw) { tip.style.display = "none"; return; }
   const i = Math.round(layout.i0 + (x - LEFT) / layout.xw * (layout.i1 - layout.i0));
+  if (i > ds.S.length / 6 - 1) { tip.style.display = "none"; return; }   // (the empty end of a live window)
   const pl = layout.panels.find(q => y >= q.top && y <= q.bot);
   if (!pl) { tip.style.display = "none"; return; }
   draw();
-  const g = cv.getContext("2d"); g.strokeStyle = "rgba(255,255,255,0.5)"; g.lineWidth = 1; g.beginPath(); g.moveTo(layout.X(i), TOPM); g.lineTo(layout.X(i), r.height - AXIS); g.stroke();
+  const g = cv.getContext("2d"); g.strokeStyle = "rgba(255,255,255,0.5)"; g.lineWidth = 1; g.beginPath(); g.moveTo(layout.X(i), layout.top); g.lineTo(layout.X(i), r.height - AXIS); g.stroke();
   const c = ds.caps[sel];
   let html = `<b>${(i / ds.rate).toFixed(3)} s</b> · reading ${i}${c ? ` · ${((i - c.trig) / ds.rate * 1000).toFixed(0)} ms from the trigger` : ""}<br>`;
   if (pl.p.state) {
@@ -816,7 +889,7 @@ function relDetail(i, end, peak) {                             // the live relea
 }
 function renderSide() {
   const el = $("rules"), c = ds && ds.caps[sel];
-  if (!ds) return;
+  if (!ds || !ds.fw) return;
   const L = ds.fw.level, r = ds.rate, ms = k => `${(k / r * 1000).toFixed(0)} ms`, tS = i => `${(i / r).toFixed(3)} s`;
   const li = [];
   if (!c) {
@@ -866,6 +939,12 @@ function renderSide() {
     const h = ds.file.cap;
     li.push(`<li><b>The disc's own record</b> of this capture: ${h.counted ? "counted" : `not counted (${WHY[h.why] || "?"})`}, release at reading ${h.rel === 0xFFFF ? "none" : h.rel}${c.start + (R.iRel || 0) === h.rel ? " – the same as worked out here ✓" : ` – here: ${R.found ? R.iRel : "none"}`}, ended: ${END[h.end] || h.end}. Recorded with log version ${h.ver}.</li>`);
   }
+  const dc = discRecordOf(c);                                   // a recording or a live session: the disc's results for this capture
+  if (dc) {
+    const h = dc.h, same = R.found && h.rel !== 0xFFFF && R.iRel === h.rel;
+    li.push(`<li><b>The disc itself</b> ${h.counted ? "counted this throw" : `didn't count it (${WHY[h.why] || "?"})`}${h.res ? `: ${fmt(h.res[0], 1)} mph, ${fmt(h.res[1], 0)} rpm` : ""}; its release at reading ${h.rel === 0xFFFF ? "none" : h.rel} of the capture${same ? " – the same as worked out here ✓" : ` – here: ${R.found ? R.iRel : "none"}`}.
+      ${dc.fetched ? "Fetched from the disc's memory after a reconnect." : ""}</li>`);
+  } else if (ds.kind === "live" && !c.unfinished) li.push(`<li class="na">The disc sent no results for a capture starting here: its own capture started at a different reading, or the results haven't arrived yet.</li>`);
   el.innerHTML = li.join("");
   renderSix(c);
   draw();
@@ -873,7 +952,8 @@ function renderSide() {
 function renderSix(c) {
   const R = c && c.R, rb = c && $("showRebuilt").checked ? rebuildOf(c) : null, rbK = c && c.rbK && c.rbK.info && c.rbK.info.speedSrc === "drag" ? c.rbK : null;
   const T = ds.sim && ds.sim.truth ? { speed: ds.sim.truth.speed, spin: ds.sim.P.rpm, hyzer: ds.sim.truth.hyzerAxis, nose: ds.sim.truth.noseAxis, launch: ds.sim.truth.launch, wobble: ds.sim.P.wobble } : null;
-  const fileRes = ds.file && ds.file.cap ? ds.file.cap.res : ds.file && ds.file.logThrow && ds.file.logThrow.c ? ds.file.logThrow.c.res : null;
+  const dcr = discRecordOf(c);
+  const fileRes = ds.file && ds.file.cap ? ds.file.cap.res : ds.file && ds.file.logThrow && ds.file.logThrow.c ? ds.file.logThrow.c.res : dcr && dcr.h.res ? dcr.h.res : null;
   const cols = [];
   if (T) cols.push(["Truth", T, null]);
   if (R && R.n) cols.push([`Disc (v${ds.ver})`, { speed: c.R.speed, spin: c.spinFloor && c.spinFloor > R.spin ? c.spinFloor : R.spin, hyzer: R.hyzer, nose: R.nose, launch: R.launch, wobble: R.wobble }, T]);
@@ -960,15 +1040,446 @@ function drawBatch(res, what) {
   $("batchTable").innerHTML = h + `</table><p class="note">Typical error, and in brackets the error 9 throws in 10 stay within. ${res.filter(x => x.miss).length ? `${res.filter(x => x.miss).length} throws were not counted.` : ""}</p>`;
 }
 
+// ---------------------------------------------------------------- live from the disc
+// Bluetooth as the other pages do it (sim.html, disc3d.html; rule R2: UUIDs, packets and commands of disc_tracker_v2.ino).
+// "bton" streams every reading (packet 1); the disc's settings come with it and every 10 s (2); each capture's results (3);
+// a gap notice (4). After "unsent" the disc sends the throws it kept while nobody had them: a start (7: the results and
+// the disc's settings then), the readings with the flight after them (6) and an end (8). Each is confirmed with "ack N"
+// once this page has its readings, so it isn't sent again.
+const BT_SVC = "19b10000-e8f2-537e-4f6c-d104768a1214", BT_CMD = "19b10002-e8f2-537e-4f6c-d104768a1214", BT_STREAM = "19b10009-e8f2-537e-4f6c-d104768a1214";
+const lvSleep = ms => new Promise(r => setTimeout(r, ms));
+const lvTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), ms))]);
+// The session: every reading by its place, from the first one that arrived. A reading that never arrived is a hole
+// (have = 0); a throw fetched later fills its part of a hole. Readings are placed by the disc's own numbering (seq), per
+// power-up (boot): a disc that restarts starts a new stretch after the last one.
+const LV = { device: null, cmd: null, looping: false, userStop: false, connected: false, state: "off",
+  info: null, segs: [], size: 0, S: new Int16Array(0), have: new Uint8Array(0), gap: new Uint8Array(0), dup: new Uint8Array(0), n: 0, lastFill: 0,
+  loop: null, loopKey: "", restart: false, discCaps: [], fetched: [], stored: null, done: new Set(), acking: new Set(), fetchNote: [],
+  follow: true, ds: null, capSig: "", timer: 0, rx: 0, rxPrev: 0, rxT: 0, rate: 0, t0: 0 };
+
+function lvParseInfo(dv) {                                      // as sim.html parseInfo
+  const f = k => dv.getFloat32(16 + 4 * k, true), len = dv.byteLength;
+  const I = { boot: dv.getUint16(2, true), seq: dv.getUint32(4, true), millis: dv.getUint32(8, true), odr: dv.getUint16(12, true) || 416,
+    sens: dv.getUint8(14) || 5, logVer: dv.getUint8(15) || 3, alsb: f(0) || AL0, glsb: f(1) || GL0, bias: [f(2), f(3), f(4)],
+    R: [f(5), f(6), f(7), f(8), f(9), f(10), f(11), f(12), f(13)], radius: f(14), batt: f(15), trigG: f(16), trigDps: f(17), freeG: f(18),
+    minPeak: f(19), minSpin: f(20) };
+  if (len >= 108) Object.assign(I, { relMinRpm: dv.getFloat32(100, true), relPeakG: dv.getFloat32(104, true) });
+  if (len >= 120) Object.assign(I, { calSeq: dv.getUint32(108, true), calFlags: dv.getUint16(112, true), tempCdeg: dv.getInt16(114, true),
+    prePeak: dv.getUint16(116, true), steadyN: dv.getUint8(118), biasTol: dv.getUint8(119) / 10 });
+  I.rateHz = len >= 124 ? dv.getFloat32(120, true) : 0;
+  return I;
+}
+function lvParseCap(dv) {                                       // a capture's results (as sim.html parseCap)
+  const f = k => dv.getFloat32(20 + 4 * k, true), v5 = dv.byteLength >= 72;
+  return { start: dv.getUint32(2, true), n: dv.getUint16(6, true), rel: dv.getUint16(8, true), liveRel: dv.getUint16(10, true),
+    counted: dv.getUint8(12), src: dv.getUint8(13), flags: dv.getUint16(14, true), end: dv.getUint8(16), sens: dv.getUint8(17),
+    res: Array.from({ length: 10 }, (_, k) => f(k)), tMs: dv.getUint32(60, true),
+    recNo: v5 ? dv.getUint32(64, true) : null, why: v5 ? dv.getUint8(68) : 0, flags2: v5 ? dv.getUint16(70, true) : 0 };
+}
+function lvEnsure(need) {
+  if (need <= LV.size) return;
+  let c = Math.max(1 << 16, LV.size * 2); while (c < need) c *= 2;
+  const grow = (A, T, per = 1) => { const B = new T(c * per); B.set(A); return B; };
+  LV.S = grow(LV.S, Int16Array, 6); LV.have = grow(LV.have, Uint8Array); LV.gap = grow(LV.gap, Uint8Array); LV.dup = grow(LV.dup, Uint8Array);
+  LV.size = c;
+}
+// The place of reading `seq` of power-up `boot` in the session, or -1 if it falls outside that power-up's stretch (before
+// the session started, or - for an earlier power-up - after it ended). Each power-up's stretch starts at `from`.
+function lvIdx(seq, boot, make) {
+  let k = LV.segs.length - 1; while (k >= 0 && LV.segs[k].boot !== boot) k--;
+  if (k < 0) {
+    if (!make) return -1;
+    const from = LV.n ? LV.n + 1 : 0;                           // a restarted disc: one missing reading between the stretches
+    LV.segs.push({ boot, base: seq - from, from }); k = LV.segs.length - 1;
+  }
+  const g = LV.segs[k], idx = seq - g.base, next = LV.segs[k + 1];
+  return idx < g.from || (next && idx >= next.from - 1) ? -1 : idx;
+}
+function lvPut(idx, src, off) {                                 // a reading arrived for place idx
+  lvEnsure(idx + 1);
+  if (LV.have[idx]) return false;
+  for (let k = 0; k < 6; k++) LV.S[idx * 6 + k] = src(off + k);
+  LV.have[idx] = 1;
+  if (idx >= LV.n) LV.n = idx + 1;
+  LV.gap[idx] = idx > 0 && !LV.have[idx - 1] ? 1 : 0;
+  if (LV.have[idx + 1]) LV.gap[idx + 1] = 0;
+  const same = i => { for (let k = 0; k < 6; k++) if (LV.S[i * 6 + k] !== LV.S[(i - 1) * 6 + k]) return 0; return 1; };
+  LV.dup[idx] = idx > 0 && LV.have[idx - 1] ? same(idx) : 0;
+  if (LV.have[idx + 1]) LV.dup[idx + 1] = same(idx + 1);
+  if (LV.loop && idx < LV.loop.n) { LV.restart = true; LV.lastFill = performance.now(); }   // a hole in the past was filled: run the loop again
+  return true;
+}
+function lvPacket(dv) {
+  if (dv.byteLength < 2) return;
+  const type = dv.getUint8(0);
+  if (type === 2 && dv.byteLength >= 100) {
+    const I = lvParseInfo(dv);
+    if (LV.info && I.boot !== LV.info.boot) LV.restart = true;  // the disc restarted
+    LV.info = I; lvSoon(); return;
+  }
+  if (type === 3 && dv.byteLength >= 64) { if (LV.info) lvResults(lvParseCap(dv), false, LV.info.boot); return; }
+  if (type >= 6 && type <= 8) { lvStored(dv, type); return; }
+  if (type !== 1 || dv.byteLength < 6 || !LV.info) return;     // (readings before the first settings: their scale isn't known yet)
+  const n = Math.min(dv.getUint8(1), Math.floor((dv.byteLength - 6) / 12)), seq = dv.getUint32(2, true);
+  for (let j = 0; j < n; j++) {
+    const idx = lvIdx(seq + j, LV.info.boot, true);
+    if (idx >= 0) lvPut(idx, k => dv.getInt16(6 + j * 12 + 2 * k, true), 0);
+  }
+  LV.rx += n; lvSoon();
+}
+const lvAllHere = (i, n) => { if (i < 0 || i + n > LV.n) return false; for (let k = i; k < i + n; k++) if (!LV.have[k]) return false; return true; };
+// "ack N" tells the disc this page has throw N, and the disc then never sends it (or its flight tail) again.
+async function lvAck(recNo, boot, again) {
+  const key = `${boot}:${recNo}`;
+  if (recNo == null || recNo === 0xFFFFFFFF || LV.acking.has(key) || (LV.done.has(key) && !again)) return;
+  LV.acking.add(key);
+  if (await lvCmd("ack " + recNo)) LV.done.add(key);
+  LV.acking.delete(key);
+}
+// Ready to confirm a throw of the disc's: every reading of it is here - and, for a counted throw that ended in the air,
+// every reading of its flight tail too (to the landing, 10 s at most). A far throw usually goes out of range during that
+// flight, after its capture has come in, and only an unconfirmed throw comes back with its flight after a reconnect.
+// The landing is the one this page's copy of the disc's loop found, while it runs the disc's own rules; else wait 10 s.
+const TAIL_MAX_N = 4160;                                        // the disc's longest flight tail, in readings
+function lvAckReady(d) {
+  const h = d.h, I = LV.info, L = LV.ds;
+  if (d.i < 0 || !lvAllHere(d.i, h.n)) return false;
+  if (!h.counted || h.end !== 2) return true;                   // no flight tail
+  const own = L && I && L.caps && L.ver === (I.logVer >= 6 ? I.logVer : 5) && L.level === (I.sens || 5);
+  const c = own ? L.caps.find(q => q.start === d.i) : null;
+  if (c && c.tail && (c.tail.why === "landed" || c.tail.why === "10 s limit")) return lvAllHere(d.i, c.tail.end - d.i + 1);
+  return lvAllHere(d.i, h.n + TAIL_MAX_N);
+}
+function lvAckWhenReady() { for (const d of LV.discCaps) if (!LV.done.has(d.key) && lvAckReady(d)) lvAck(d.h.recNo, d.h.boot); }
+function lvResults(c, fetched, boot) {
+  const key = `${boot}:${c.recNo}`, i = lvIdx(c.start, boot, false);
+  const old = c.recNo != null ? LV.discCaps.find(d => d.key === key) : null;
+  const rec = { key, i, fetched, h: Object.assign({}, c, { boot, ver: LV.info ? LV.info.logVer : 0 }) };
+  if (old) Object.assign(old, rec); else LV.discCaps.push(rec);
+  lvSoon();                                                     // (confirmed from lvRefresh, once it and its flight are here)
+}
+function lvStored(dv, type) {                                   // a throw the disc kept (as disc3d.html onStored)
+  if (type === 7) {
+    if (dv.byteLength < 96) return;
+    const c = lvParseCap(dv), g = o => dv.getFloat32(o, true);
+    Object.assign(c, { total: dv.getUint16(72, true), boot: dv.getUint16(74, true), bias: [g(76), g(80), g(84)], radius: g(88), alsb: g(92) });
+    LV.stored = { c, S: new Int16Array(Math.max(1, c.total) * 6), have: new Uint8Array(Math.max(1, c.total)) };
+    return;
+  }
+  const s = LV.stored;
+  if (!s || dv.byteLength < 6 || dv.getUint32(2, true) !== s.c.recNo) return;
+  if (type === 6 && dv.byteLength >= 8) {
+    const k = Math.min(dv.getUint8(1), Math.floor((dv.byteLength - 8) / 12)), i0 = dv.getUint16(6, true);
+    for (let j = 0; j < k && i0 + j < s.c.total; j++) { for (let q = 0; q < 6; q++) s.S[(i0 + j) * 6 + q] = dv.getInt16(8 + j * 12 + 2 * q, true); s.have[i0 + j] = 1; }
+    return;
+  }
+  if (type === 8) { LV.stored = null; lvPlaceStored(s); }
+}
+function lvPlaceStored(s) {
+  const c = s.c, key = `${c.boot}:${c.recNo}`;
+  if (LV.done.has(key)) { lvAck(c.recNo, c.boot, true); return; }   // confirmed already (that "ack" may not have got through)
+  // its readings (the capture, then the flight after it) go back where they belong in the session
+  let placed = 0, outside = 0;
+  for (let j = 0; j < c.total; j++) {
+    if (!s.have[j]) continue;
+    const idx = lvIdx(c.start + j, c.boot, false);
+    if (idx < 0) { outside++; continue; }
+    if (lvPut(idx, k => s.S[k], j * 6)) placed++;
+  }
+  if (outside && !placed) {
+    // from before this session started (or an earlier power-up): its own recording, in the list
+    const S = s.S.slice(); for (let j = 1; j < c.total; j++) if (!s.have[j]) S.copyWithin(j * 6, (j - 1) * 6, j * 6);
+    const I = LV.info || {};
+    LV.fetched.push({ kind: "file", name: `Fetched throw #${c.recNo}: ${c.counted ? `counted, ${c.res[0].toFixed(1)} mph` : "not counted"}`, S,
+      rate: I.rateHz > 380 ? I.rateHz : 418.6, info: { alsb: c.alsb > 0 ? c.alsb : I.alsb || AL0, glsb: I.glsb || GL0, bias: c.bias, radius: c.radius > 0.0005 ? c.radius : 0,
+        locked: !!((I.calFlags || 0) & 2), logVer: I.logVer || 5, sens: c.sens || I.sens || 5, rateHz: I.rateHz || 0 },
+      file: { cap: Object.assign({}, c, { ver: I.logVer || 5 }), tailN: c.total - c.n } });
+    lvFetchedList();
+  } else { const old = LV.discCaps.find(d => d.key === key); lvResults(c, placed > 0 || !old || old.fetched, c.boot); }
+  lvAck(c.recNo, c.boot, true);                                 // all the disc kept of it is here now
+  LV.fetchNote.push(`#${c.recNo} (${placed ? `${placed} readings put back in the session` : outside ? "from before this session: in the list below" : "this page had all of it"})`);
+  lvNote(`Fetched from the disc's memory since connecting: throw ${LV.fetchNote.join(", throw ")}.`);
+  lvSoon();
+}
+function lvNote(t) { $("lvNote").textContent = t; }
+function lvFetchedList() {
+  const p = $("lvFetched"); p.innerHTML = `<option value="">Throws fetched from before this session (${LV.fetched.length})…</option>`;
+  LV.fetched.forEach((d, i) => { const o = document.createElement("option"); o.value = i; o.textContent = d.name; p.appendChild(o); });
+  p.style.display = LV.fetched.length ? "" : "none";
+}
+$("lvFetched").onchange = () => { const i = $("lvFetched").value; if (i !== "") show(() => LV.fetched[+i]); };
+
+// ---- the session as a thing to look at, kept up to date about 8 times a second
+function lvDataset() {
+  if (!LV.ds) LV.ds = { kind: "live", name: "Live from the disc", S: LV.S.subarray(0, 0), gap: null, dup: null, rate: 418.6, info: null, caps: [],
+                        file: { discCaps: [] }, rbCache: new Map() };
+  return LV.ds;
+}
+const lvInfo = () => { const I = LV.info; return { alsb: I.alsb, glsb: I.glsb, bias: I.bias, radius: I.radius > 0.0005 && I.radius < 0.03 ? I.radius : 0,
+  locked: !!((I.calFlags || 0) & 2), logVer: I.logVer, sens: I.sens, rateHz: I.rateHz || 0 }; };
+function lvSoon() { if (!LV.timer) LV.timer = setTimeout(lvRefresh, 120); }
+function lvRefresh() {
+  LV.timer = 0;
+  lvStats();
+  if (!SC || !LV.info || !LV.n) return;
+  const d = lvDataset(), I = lvInfo();
+  Object.assign(d, { info: I, rate: I.rateHz > 380 && I.rateHz < 460 ? I.rateHz : 418.6, S: LV.S.subarray(0, LV.n * 6),
+                     gap: LV.gap.subarray(0, LV.n), dup: LV.dup.subarray(0, LV.n), have: LV.have.subarray(0, LV.n) });
+  const { ver, level } = rulesFor(d), key = [ver, level, I.alsb, I.glsb, I.bias.join(","), I.radius, I.locked, I.rateHz].join("|");
+  // Readings still coming back into the past (the disc's backlog, a kept throw): run the whole session again once,
+  // when they stop - it takes about 0.4 s for 10 minutes of readings - and until then carry on with the old run.
+  const filling = LV.restart && performance.now() - (LV.lastFill || 0) < 500;
+  if (filling) lvSoon();
+  if (!LV.loop || (LV.restart && !filling) || key !== LV.loopKey) {
+    LV.loop = FW.create({ an: SC, ver, level, alsb: I.alsb, glsb: I.glsb, bias: I.bias, radius: I.radius, locked: I.locked, rateHz: ver >= 6 ? I.rateHz : 0 });
+    LV.loopKey = key; LV.restart = false; d.rbCache.clear(); LV.capSig = "";
+  }
+  LV.loop.feed(LV.S, LV.n, undefined, LV.have);
+  d.ver = ver; d.level = level;
+  d.fw = LV.loop.result(); d.caps = d.fw.captures;
+  d.file.discCaps = LV.discCaps.filter(x => x.i >= 0);
+  if (LV.cmd) lvAckWhenReady();
+  if (ds !== d) return;
+  if (LV.follow) {                                              // the newest 8 s, filling from the left at first
+    if (d.caps.length) sel = d.caps.length - 1;
+    const span = Math.round(8 * d.rate);
+    view.i0 = Math.max(0, LV.n - 1 - span); view.i1 = view.i0 + span;
+    LV.justShown = false;
+  }
+  if (sel >= d.caps.length) sel = d.caps.length - 1;
+  const sig = d.caps.map(c => `${c.trig}:${c.end}:${c.counted}:${c.unfinished ? 1 : 0}`).join(",") + `|${d.file.discCaps.length}|${sel}`;
+  if (sig !== LV.capSig) { LV.capSig = sig; renderCaps(); renderSide(); } else draw();
+  lvBar();
+}
+function lvStats() {
+  const now = performance.now();
+  if (now - LV.rxT >= 1000) { LV.rate = (LV.rx - LV.rxPrev) * 1000 / Math.max(1, now - LV.rxT); LV.rxPrev = LV.rx; LV.rxT = now; }
+  let holes = 0; for (let i = 0; i < LV.n; i++) if (!LV.have[i]) holes++;
+  const I = LV.info, r = I && I.rateHz > 380 ? I.rateHz : 418.6, counted = LV.discCaps.filter(d => d.h.counted).length;
+  const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  $("lvStats").innerHTML = !LV.n ? "" :
+    `Session: <b>${mmss(LV.n / r)}</b> · ${LV.n - holes} readings` + (holes ? ` · <span style="color:var(--warn)">${mmss(holes / r)} missing</span>` : "") +
+    `<br>The disc counted <b>${counted}</b> throw${counted === 1 ? "" : "s"}` + (LV.discCaps.some(d => d.fetched) ? ` (${LV.discCaps.filter(d => d.fetched).length} fetched after a reconnect)` : "") +
+    (I ? `<br>Firmware log version ${I.logVer}, sensitivity ${I.sens}${I.batt > 0 ? ` · battery ${I.batt.toFixed(2)} V` : ""}` : "");
+  if (LV.connected) $("lvState").textContent = `Connected · ${LV.rate.toFixed(0)} readings a second`;
+}
+function lvSetState(state, n) {
+  if (state === "on" && LV.state !== "on") LV.fetchNote = [];
+  LV.state = state; LV.connected = state === "on";
+  const txt = { on: "Connected", connecting: "Connecting…", retry: `Out of range or busy – trying again (${n})…`, lost: "Connection lost – reconnecting…",
+    bad: n || "Bluetooth isn't available here: open this page in Chrome or Edge on a computer.", off: "Not connected" }[state] || "Not connected";
+  $("lvState").textContent = txt;
+  const busy = !!LV.device;
+  for (const id of ["lvConnect", "hdrConnect"]) { $(id).textContent = busy ? "Disconnect" : "Connect to the disc"; $(id).classList.toggle("on", LV.connected); }
+  lvBar();
+}
+function lvBar() {
+  const live = !!ds && ds.kind === "live";
+  $("barLive").hidden = !live;
+  if (!live) return;
+  $("barLive").classList.toggle("paused", !LV.follow || !LV.connected);
+  $("barLiveText").textContent = LV.connected ? (LV.follow ? "Live" : "Looking back")
+    : { connecting: "Connecting…", retry: "Reconnecting…", lost: "Reconnecting…" }[LV.state] || "Not connected";
+  $("barBack").hidden = LV.follow;
+}
+function lvRestartLoop() { LV.restart = true; LV.capSig = ""; lvRefresh(); }   // the rules were changed on the left
+function lvFollow(on) {
+  if (!ds || ds.kind !== "live" || LV.follow === on) return;
+  LV.follow = on; lvBar();
+  if (on) { LV.justShown = true; lvRefresh(); }
+}
+function lvShowLive() {
+  document.querySelector('#srcTabs [data-src="live"]').click();
+  const d = lvDataset(); ds = d; sel = -1; LV.follow = true; LV.justShown = true; LV.capSig = "";
+  if (!LV.n) { $("caps").innerHTML = `<span class="note">Waiting for the disc's readings…</span>`; renderCaps0(); }
+  lvBar(); lvRefresh();
+}
+function renderCaps0() { const { g, W, H } = fitCanvas(); g.clearRect(0, 0, W, H); g.fillStyle = "#a7b2c0"; g.font = "14px system-ui"; g.fillText("Waiting for the disc's readings…", 20, 30); }
+
+// ---- connecting (as sim.html and disc3d.html)
+async function lvCmd(text) {
+  if (!LV.cmd) return false;
+  try { const d = new TextEncoder().encode(text); await (LV.cmd.writeValueWithoutResponse ? LV.cmd.writeValueWithoutResponse(d) : LV.cmd.writeValue(d)); return true; }
+  catch (e) { console.warn("command failed", text, e); return false; }
+}
+const LAB_URL = "https://davidwwhitney1-lgtm.github.io/disctracker/lab.html";
+async function lvPick() {
+  if (!navigator.bluetooth) { lvSetState("bad", `Bluetooth isn't available here: open the lab on the DiscTracker site (${LAB_URL}) in Chrome or Edge on a computer.`); return; }
+  try {
+    const d = await navigator.bluetooth.requestDevice({ filters: [{ services: [BT_SVC] }, { name: "DiscTracker" }], optionalServices: [BT_SVC] });
+    if (LV.device && LV.device !== d) { LV.userStop = true; try { LV.device.gatt.disconnect(); } catch {} }
+    LV.device = d; lvHook(d);
+  } catch (e) {
+    if (e && e.name === "NotFoundError") return;              // the picker was closed
+    if (e && e.name === "SecurityError") { lvSetState("bad", `This copy of the page may not use Bluetooth: open the lab on the DiscTracker site (${LAB_URL}) in Chrome or Edge.`); return; }
+    lvSetState("bad", "Bluetooth: " + (e && e.message ? e.message : e)); return;
+  }
+  LV.userStop = false; lvShowLive(); lvLoop();
+}
+function lvHook(d) {
+  if (d._labHooked) return; d._labHooked = true;
+  d.addEventListener("gattserverdisconnected", () => {
+    if (d !== LV.device) return;
+    LV.cmd = null; LV.stored = null;
+    lvSetState(LV.userStop ? "off" : "lost");
+    if (!LV.userStop) lvLoop();                                // out of range: keep trying until it's back
+  });
+}
+async function lvLoop() {
+  if (LV.looping || !LV.device) return;
+  LV.looping = true; let n = 0;
+  while (LV.device && !LV.userStop && !LV.device.gatt.connected) {
+    n++; lvSetState(n > 1 ? "retry" : LV.state === "lost" ? "lost" : "connecting", n);
+    try { await lvTimeout(lvSetup(), 12000); }
+    catch (e) { console.warn("connect attempt failed", e); try { LV.device.gatt.disconnect(); } catch {} await lvSleep(Math.min(1000 * n, 3000)); }
+  }
+  LV.looping = false;
+}
+async function lvSetup() {
+  const server = await LV.device.gatt.connect(), svc = await server.getPrimaryService(BT_SVC);
+  LV.cmd = await svc.getCharacteristic(BT_CMD);
+  let bt;
+  try { bt = await svc.getCharacteristic(BT_STREAM); }
+  catch {                                                       // (let go of the disc first, so the message stays)
+    const d = LV.device; LV.userStop = true; LV.device = null; LV.cmd = null;
+    try { d.gatt.disconnect(); } catch {}
+    lvSetState("bad", "This disc's firmware can't stream its readings: update the firmware."); throw new Error("no raw stream");
+  }
+  if (!bt._labHooked) { bt._labHooked = true; bt.addEventListener("characteristicvaluechanged", e => lvPacket(e.target.value)); }
+  await bt.startNotifications();
+  if (!await lvCmd("bton")) throw new Error("could not start the stream");   // every reading, 416 a second (else connect again)
+  await lvCmd("unsent");                                        // and the throws it kept while out of range
+  if (!LV.t0) LV.t0 = Date.now();
+  lvSetState("on");
+}
+async function lvDisconnect() {
+  LV.userStop = true;
+  if (LV.cmd) await lvCmd("btoff");
+  if (LV.device) { try { LV.device.gatt.disconnect(); } catch {} }
+  LV.device = null; LV.cmd = null; lvSetState("off");
+}
+const lvToggle = () => LV.device ? lvDisconnect() : lvPick();
+$("lvConnect").onclick = lvToggle; $("hdrConnect").onclick = () => { if (!LV.device) document.querySelector('#srcTabs [data-src="live"]').click(); lvToggle(); };
+$("lvShow").onclick = () => { if (LV.n || LV.device) lvShowLive(); };
+$("lvLive").onclick = () => { if (ds !== LV.ds) lvShowLive(); else lvFollow(true); };
+$("barBack").onclick = () => lvFollow(true);
+$("lvFetch").onclick = async () => lvNote(await lvCmd("unsent") ? "Asked the disc for the throws this page hasn't confirmed…" : "Connect to the disc first.");
+
+// ---- saving the session, in the disc's log format (docs/data-formats.md), so this page opens it again
+function lvRecord(type, S, from, n, x) {
+  const I = LV.info, len = Math.ceil((256 + 12 * n) / 256) * 256, buf = new ArrayBuffer(len), dv = new DataView(buf);
+  const F = (o, v) => dv.setFloat32(o, +v || 0, true);
+  dv.setUint32(0, 0x474F4C44, true); dv.setUint16(4, I.logVer, true); dv.setUint16(6, type, true); dv.setUint32(8, len, true);
+  dv.setUint32(12, x.recNo >>> 0, true); dv.setUint16(16, x.boot ?? I.boot, true); dv.setUint8(18, x.sens || I.sens); dv.setUint8(19, x.end || 0);
+  dv.setUint32(20, (x.tMs || 0) >>> 0, true); dv.setUint16(24, n, true); dv.setUint16(26, I.odr || 416, true);
+  dv.setUint16(28, x.rel ?? 0xFFFF, true); dv.setUint16(30, x.liveRel ?? 0xFFFF, true);
+  dv.setUint8(32, x.counted || 0); dv.setUint8(33, x.src || 0); dv.setUint16(34, x.flags || 0, true);
+  (x.res || []).forEach((v, k) => F(36 + 4 * k, v));
+  (I.bias || [0, 0, 0]).forEach((v, k) => F(76 + 4 * k, v)); (I.R || [1, 0, 0, 0, 1, 0, 0, 0, 1]).forEach((v, k) => F(88 + 4 * k, v));
+  [I.radius, I.batt, I.trigG, I.trigDps, I.freeG, I.minPeak, I.minSpin, I.alsb, I.glsb].forEach((v, k) => F(124 + 4 * k, v));
+  F(160, I.relMinRpm); F(164, I.relPeakG); dv.setUint16(168, I.prePeak || 208, true); dv.setUint16(170, I.steadyN || 20, true);
+  dv.setUint16(172, I.calFlags || 0, true); dv.setInt16(174, I.tempCdeg || 0, true); F(176, I.biasTol); dv.setUint32(180, I.calSeq || 0, true);
+  dv.setUint32(184, x.seq0 >>> 0, true);
+  dv.setUint8(193, x.why || 0); dv.setUint16(194, x.flags2 || 0, true); F(204, I.rateHz);
+  for (let j = 0; j < n; j++) for (let k = 0; k < 6; k++) dv.setInt16(256 + j * 12 + 2 * k, S[(from + j) * 6 + k], true);
+  return buf;
+}
+function lvSessionFile() {                                      // the records of the session file, in order
+  const parts = []; let recNo = 0;
+  // the readings, in runs without holes (records of up to 2048 readings: "continuous recording")
+  LV.segs.forEach((g, k) => {
+    const segEnd = k + 1 < LV.segs.length ? LV.segs[k + 1].from - 1 : LV.n;
+    let i = g.from;
+    while (i < segEnd) {
+      while (i < segEnd && !LV.have[i]) i++;
+      let j = i; while (j < segEnd && LV.have[j] && j - i < 2048) j++;
+      if (j > i) parts.push(lvRecord(2, LV.S, i, j - i, { recNo: recNo++, boot: g.boot, seq0: i + g.base }));
+      i = j;
+    }
+  });
+  // the disc's own captures, with their readings and results (a reading that never came is filled with the one before)
+  for (const d of LV.discCaps) {
+    if (d.i < 0 || d.i + d.h.n > LV.n) continue;
+    const S = LV.S.slice(d.i * 6, (d.i + d.h.n) * 6);
+    for (let j = 1; j < d.h.n; j++) if (!LV.have[d.i + j]) S.copyWithin(j * 6, (j - 1) * 6, j * 6);
+    parts.push(lvRecord(1, S, 0, d.h.n, Object.assign({}, d.h, { recNo: recNo++, seq0: d.h.start })));
+  }
+  return parts;
+}
+$("lvSave").onclick = () => {
+  if (!LV.n || !LV.info) { lvNote("Nothing recorded yet."); return; }
+  const parts = lvSessionFile(), stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(parts, { type: "application/octet-stream" }));
+  a.download = `disc_lab_session_${stamp}.bin`; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  lvNote(`Saved ${parts.length} records as ${a.download}: open it on the "A recording" tab to look at it again.`);
+};
+
 // ---------------------------------------------------------------- start
 // A single-file copy (bench/build_lab.js) carries the analysis built in; the site's page reads it from sim.html.
 (window.DiscSimCodeBuilt ? Promise.resolve(window.DiscSimCodeBuilt(window.DiscTrack)) : DiscSimCode.load("sim.html")).then(code => {
   SC = code; $("caps").innerHTML = `<span class="note">Ready. Pick a throw on the left.</span>`;
-  show(makeSimThrow);
+  if (!ds) show(makeSimThrow); else if (ds.kind === "live") lvRefresh();
 }).catch(err => {
   $("caps").innerHTML = `<span class="note" style="color:var(--bad)">Could not load the disc's analysis from sim.html (${err.message}). Open this page from the same folder as sim.html, through a web server.</span>`;
 });
-window.discLab = { show, analyze, get ds() { return ds; }, get sel() { return sel; }, zoom, openFiles };
+// A pretend disc for testing the live view without one: plays the disc's own packets for a made-up session into the page.
+// Throw A comes in live with its results. Then (unless gap: false) the disc is out of range while throw B lands 20 m away;
+// the connection comes back after it, the page asks for the throws it hasn't confirmed ("unsent"), and the disc sends
+// each of them with the flight after it (7, 6, 8). `sent` lists the page's commands; stay: true stays "connected";
+// lostInFlight: true loses the connection during A's flight already.
+async function fakeLive(o = {}) {
+  if (LV.device) throw new Error("Disconnect the disc first: this plays a pretend one.");
+  const AL = AL0, GL = GL0, BOOT = 77, SEQ0 = 1000, bias = [0.45, -2.5, -0.85], pace = o.pace ?? 0, recA = 21, recB = 22;
+  const sent = [], fakeCmd = { writeValueWithoutResponse: async d => { sent.push(new TextDecoder().decode(d)); } };
+  const mk = (type, len) => { const dv = new DataView(new ArrayBuffer(len)); dv.setUint8(0, type); return dv; };
+  const info = () => { const dv = mk(2, 124); dv.setUint8(1, 1); dv.setUint16(2, BOOT, true); dv.setUint32(4, SEQ0, true); dv.setUint16(12, 416, true); dv.setUint8(14, 5); dv.setUint8(15, o.logVer || 7);
+    [AL, GL, ...bias, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0.0043, 3.95, 3.5, 600, 3, 2, 60].forEach((v, k) => dv.setFloat32(16 + 4 * k, v, true));
+    dv.setFloat32(100, 150, true); dv.setFloat32(104, 2, true); dv.setUint16(112, 2 | 64, true); dv.setUint16(116, 208, true); dv.setUint8(118, 20); dv.setUint8(119, 15); dv.setFloat32(120, 418.6, true); return dv; };
+  const cap = (type, c, recNo, total) => { const dv = mk(type, type === 7 ? 96 : 72); dv.setUint8(1, 1); dv.setUint32(2, SEQ0 + c.start, true); dv.setUint16(6, c.n, true);
+    dv.setUint16(8, c.R.found ? c.R.iRel : 0xFFFF, true); dv.setUint16(10, c.rel >= 0 ? c.rel - c.start : 0xFFFF, true); dv.setUint8(12, c.counted ? 1 : 0); dv.setUint8(13, c.R.src || 0);
+    dv.setUint16(14, c.R.flags & 0xFFFF, true); dv.setUint8(16, c.end); dv.setUint8(17, 5);
+    [c.R.speed, c.R.spin, c.R.hyzer, c.R.nose, c.R.launch, c.R.wobble, c.R.peak, 0, 0, 0].forEach((v, k) => dv.setFloat32(20 + 4 * k, v || 0, true));
+    dv.setUint32(64, recNo, true); dv.setUint8(68, c.why || 0);
+    if (type === 7) { dv.setUint16(72, total, true); dv.setUint16(74, BOOT, true); bias.forEach((v, k) => dv.setFloat32(76 + 4 * k, v, true)); dv.setFloat32(88, 0.0043, true); dv.setFloat32(92, AL, true); }
+    return dv; };
+  // A stops 25 m out and B 20 m out, both losing their spin at once (as in a net), so each flight tail finds its landing
+  const A = DiscGen.makeThrow({ V: 25, rpm: 1000, net: 25, afterHit: 2, lead: 1.2, seed: o.seed || 11, r: 0.0043 });
+  const B = DiscGen.makeThrow({ V: 24, rpm: 950, net: 20, afterHit: 3, lead: 1.2, seed: (o.seed || 11) + 1, r: 0.0043 });
+  const nA = A.rawAll.length / 6, nB = B.rawAll.length / 6, nC = 800, all = new Int16Array((nA + nB + nC) * 6);
+  all.set(A.rawAll); all.set(B.rawAll, nA * 6); all.set(B.rawAll.subarray((nB - nC) * 6), (nA + nB) * 6);
+  const disc = FW.run(all, { an: SC, ver: o.logVer || 7, level: 5, alsb: AL, glsb: GL, bias, radius: 0.0043, locked: true, rateHz: 418.6 });
+  const capA = disc.captures.find(c => c.start < nA && c.counted), capB = disc.captures.find(c => c.start >= nA && c.counted);
+  const stream = async (from, to) => { for (let i = from; i < to; i += 19) { const k = Math.min(19, to - i), dv = mk(1, 6 + 12 * k); dv.setUint8(1, k); dv.setUint32(2, SEQ0 + i, true);
+    for (let j = 0; j < k; j++) for (let q = 0; q < 6; q++) dv.setInt16(6 + j * 12 + 2 * q, all[(i + j) * 6 + q], true); lvPacket(dv); if (pace && (i / 19) % 4 === 0) await lvSleep(pace); } };
+  const resend = (c, recNo) => {                                // a kept throw: the capture and its flight tail
+    const total = c.tail && c.tail.end > 0 ? c.tail.end - c.start + 1 : c.n;
+    lvPacket(cap(7, c, recNo, total));
+    for (let i = 0; i < total; i += 19) { const k = Math.min(19, total - i), dv = mk(6, 8 + 12 * k); dv.setUint8(1, k); dv.setUint32(2, recNo, true); dv.setUint16(6, i, true);
+      for (let j = 0; j < k; j++) for (let q = 0; q < 6; q++) dv.setInt16(8 + j * 12 + 2 * q, all[(c.start + i + j) * 6 + q], true); lvPacket(dv); }
+    const e = mk(8, 6); e.setUint32(2, recNo, true); lvPacket(e);
+  };
+  // lostInFlight: the connection goes 0.1 s after A's capture has come in, in its flight (a far throw), not after A landed
+  const aEnd = capA.start + capA.n, cut = o.lostInFlight ? aEnd + 42 : nA;
+  if (ds !== LV.ds) lvShowLive();
+  LV.cmd = fakeCmd; lvSetState("on");
+  lvPacket(info());
+  await stream(0, aEnd); lvPacket(cap(3, capA, recA)); await stream(aEnd, cut);
+  await lvSleep(300);                                           // (the page catches up: A is confirmed if it has landed)
+  if (o.gap === false) { await stream(nA, nA + nB + nC); lvPacket(cap(3, capB, recB)); }
+  else {
+    LV.cmd = null; lvSetState("lost"); await lvSleep(pace ? 1500 : 50);   // out of range for the whole of B
+    LV.cmd = fakeCmd; lvSetState("on"); await lvCmd("unsent");
+    await stream(nA + nB, nA + nB + nC);                        // the stream comes back after B
+    for (const [c, no] of [[capA, recA], [capB, recB]]) if (!sent.includes("ack " + no)) resend(c, no);
+  }
+  await lvSleep(700); lvRefresh(); await lvSleep(50);           // (past the half second the page waits for readings to stop coming back)
+  const res = { capA: capA.start, capB: capB.start, n: LV.n, caps: ds.caps.map(c => ({ start: c.start, counted: c.counted, end: c.end, tail: c.tail ? c.tail.why : null })),
+                disc: LV.discCaps.map(d => ({ i: d.i, fetched: d.fetched, counted: !!d.h.counted })), sent: sent.slice() };
+  if (!o.stay) { LV.cmd = null; lvSetState("off"); }
+  return res;
+}
+window.discLab = { show, analyze, get ds() { return ds; }, get sel() { return sel; }, zoom, openFiles, fakeLive, get live() { return LV; } };
 </script>
 </body>
 </html>

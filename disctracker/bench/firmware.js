@@ -13,7 +13,8 @@
 // DiscFirmware.run(S, cfg): S = raw counts, n x 6 (gx gy gz ax ay az, disc axes) at the disc's sample rate.
 // cfg: { an (DiscSimCode build), ver (5, 6 or 7), level (1-5), alsb, glsb, bias [x, y, z] deg/s (the disc's stored
 // gyro offset), radius (m, 0 = not known), locked (radius set by the calibration page), rateHz (measured, 0 = 416),
-// gap (optional Uint8Array: 1 = samples were lost just before this one) }.
+// gap (optional Uint8Array: 1 = samples were lost just before this one, on the disc), have (optional Uint8Array:
+// 0 = this reading never reached the computer, though the disc had it - see create() below) }.
 // Returns { captures, state, relCode, impForce, landDev, cfg }. The arrays have one value per sample of S:
 //   state:    STATE codes below;
 //   relCode:  why the live release test failed at that sample (REL codes), while it was being tested;
@@ -50,18 +51,29 @@ function medianOf(v) {
   return !m ? 0 : (m & 1 ? a[m >> 1] : 0.5 * (a[m / 2 - 1] + a[m / 2]));
 }
 
-function run(S, cfg) {
-  const n = S.length / 6, ver = cfg.ver || 7, L = SENS[cfg.level || 5] || SENS[5], v6 = ver >= 6;
+// DiscFirmware.create(cfg): the same loop, fed as readings arrive (lab.html's live view): feed(S, upto, gap, have)
+// runs the readings up to `upto` that it hasn't run yet (S may be a longer, reallocated copy each time), and result()
+// gives what run() gives, with a capture or a flight tail still going reported as unfinished (nothing is changed).
+// have (optional Uint8Array): 0 = this reading never arrived (a hole in a live stream); the disc's loop starts over after it.
+function create(cfg) {
+  const ver = cfg.ver || 7, L = SENS[cfg.level || 5] || SENS[5], v6 = ver >= 6;
   const AL = cfg.alsb || 0.000488, GL = cfg.glsb || 0.07, bias = cfg.bias || [0, 0, 0];
   let radius = cfg.radius > 0.0005 && cfg.radius < 0.03 ? cfg.radius : 0;
   const an = cfg.an;
+  let S = new Int16Array(0), GAP = null, HAVE = null;      // the stream so far, its gap flags, which readings arrived
   const ax = i => S[i * 6 + 3] * AL, ay = i => S[i * 6 + 4] * AL, az = i => S[i * 6 + 5] * AL, gz = i => S[i * 6 + 2] * GL;
   const mag = i => Math.hypot(ax(i), ay(i), az(i));
   const rot = i => Math.hypot(S[i * 6] * GL, S[i * 6 + 1] * GL, S[i * 6 + 2] * GL);
   const inRange = 0.98 * 32767 * GL;
   const sat = v => v >= K.SAT || v <= -K.SAT;
-  const state = new Uint8Array(n), relCode = new Int8Array(n).fill(-1);
-  const impForce = new Float32Array(n).fill(NaN), landDev = new Float32Array(n).fill(NaN);
+  let size = 0, state = new Uint8Array(0), relCode = new Int8Array(0), impForce = new Float32Array(0), landDev = new Float32Array(0);
+  const ensure = need => {                                    // room for `need` readings in the per-reading arrays
+    if (need <= size) return;
+    let c = Math.max(8192, size * 2); while (c < need) c *= 2;
+    const grow = (A, T, fill) => { const B = new T(c); if (fill !== undefined) B.fill(fill); B.set(A); return B; };
+    state = grow(state, Uint8Array); relCode = grow(relCode, Int8Array, -1); impForce = grow(impForce, Float32Array, NaN); landDev = grow(landDev, Float32Array, NaN);
+    size = c;
+  };
   const captures = [];
   const refrN = Math.floor(K.REFRACTORY_MS * K.ODR / 1000);    // 124 samples: integer maths, as the firmware
   const rearmMaxN = Math.floor(K.REARM_MAX_MS * K.ODR / 1000);
@@ -181,25 +193,31 @@ function run(S, cfg) {
     else if (t.count >= K.TAIL_MAX) endTail(k, "10 s limit");
   };
 
-  for (let k = 0; k < n; k++) {
-    if (cfg.gap && cfg.gap[k]) {                              // samples lost before this one (FIFO overrun, a stream gap)
+  let lostBefore = false;                                     // readings never arrived just before the next one
+  const step = k => {
+    if (HAVE && !HAVE[k]) { state[k] = STATE.LOST; lostBefore = true; return; }
+    if ((GAP && GAP[k]) || lostBefore) {                      // samples lost before this one (FIFO overrun, a stream gap)
+      const unseen = lostBefore; lostBefore = false;
       if (capturing) { cap.end = END.LOST; cap.endK = k - 1; cap.counted = false; cap.why = WHY.LOST; captures.push(cap); capturing = false; refrEnd = k; }
       if (tail) endTail(k - 1, "samples lost");
       preFill = 0;
+      // Readings that never reached this computer (a Bluetooth drop-out): the disc itself carried on and settled, unseen.
+      // Start again as a disc that is ready, once its history has refilled - not as one still waiting after the last throw.
+      if (unseen) { rearmHold = false; rearmStillN = 0; refrEnd = 0; }
     }
     if (!capturing) {
       if (preFill < K.PRE) preFill++;
-      if (tail) { state[k] = STATE.TAIL; tailFeed(k); continue; }
-      if (k < refrEnd) { state[k] = STATE.REFRACTORY; continue; }
-      if (preFill < K.PRE) { state[k] = STATE.FILLING; continue; }
+      if (tail) { state[k] = STATE.TAIL; tailFeed(k); return; }
+      if (k < refrEnd) { state[k] = STATE.REFRACTORY; return; }
+      if (preFill < K.PRE) { state[k] = STATE.FILLING; return; }
       const aM = mag(k), gM = rot(k);
       if (rearmHold) {
         rearmStillN = gM < K.REARM_DPS && Math.abs(aM - 1) < K.REARM_G ? rearmStillN + 1 : 0;
         const timeUp = k - rearmSeq > rearmMaxN && gM < L.trigDps;
         if (rearmStillN >= K.REARM_STILL_N || timeUp) rearmHold = false;
-        else { state[k] = STATE.SETTLING; continue; }
+        else { state[k] = STATE.SETTLING; return; }
       }
-      if (aM < L.trigG && gM < L.trigDps) { state[k] = STATE.ARMED; continue; }
+      if (aM < L.trigG && gM < L.trigDps) { state[k] = STATE.ARMED; return; }
       // the trigger: the capture is the last PRE samples, this one last
       const start = k - (K.PRE - 1);
       let peakLive = 0;
@@ -208,7 +226,7 @@ function run(S, cfg) {
               start, n: K.PRE, cand: k, rel: -1, peakLive, dcN: 0, dc: [0, 0, 0], level: 0, hitAt: 0, hitRun: 0, end: 0, endK: -1, hitK: -1,
               radiusBefore: radius };
       capturing = true; state[k] = STATE.CAPTURE;
-      continue;
+      return;
     }
     // ---- capturing
     const c = cap; c.n++;
@@ -267,11 +285,33 @@ function run(S, cfg) {
       captures.push(c);
       preFill = K.PRE;                                        // the ring is refilled from the capture's last samples
     }
-  }
-  if (capturing) { cap.end = 0; cap.endK = n - 1; cap.unfinished = true; captures.push(cap); }
-  if (tail) { tail.link.tail.end = n - 1; tail.link.tail.why = "recording ended"; tail.link.tail.landAt = tail.landAt ? tail.start + tail.landAt - 1 : -1; }
-  return { captures, state, relCode, impForce, landDev, cfg: Object.assign({}, cfg, { radiusEnd: radius }), level: L, K };
+  };
+  let next = 0;                                               // the next reading to run
+  const api = {
+    feed(S2, upto, gap, have) {
+      S = S2; if (gap !== undefined) GAP = gap; if (have !== undefined) HAVE = have;
+      const end = Math.min(upto == null ? S.length / 6 : upto, S.length / 6);
+      ensure(end);
+      for (; next < end; next++) step(next);
+      return api;
+    },
+    get n() { return next; },
+    // What the loop has decided so far. A capture still going, or a flight tail still recording, is reported as
+    // unfinished (copies: feeding more readings carries on from where it was).
+    result() {
+      const n = next, caps = captures.map(c => {
+        if (!tail || c !== tail.link) return c;
+        return Object.assign({}, c, { tail: Object.assign({}, c.tail, { end: n - 1, why: "recording ended", landAt: tail.landAt ? tail.start + tail.landAt - 1 : -1 }) });
+      });
+      if (capturing) caps.push(Object.assign({}, cap, { end: 0, endK: n - 1, unfinished: true }));
+      return { captures: caps, state: state.subarray(0, n), relCode: relCode.subarray(0, n), impForce: impForce.subarray(0, n), landDev: landDev.subarray(0, n),
+               cfg: Object.assign({}, cfg, { radiusEnd: radius }), level: L, K, n };
+    },
+  };
+  return api;
 }
+// DiscFirmware.run(S, cfg): the whole stream at once (the bench, and lab.html for a file or a simulated throw).
+function run(S, cfg) { return create(cfg).feed(S, null, cfg.gap, cfg.have).result(); }
 
-G.DiscFirmware = { run, SENS, K, STATE, REL, WHY, END };
+G.DiscFirmware = { run, create, SENS, K, STATE, REL, WHY, END };
 })(typeof window !== "undefined" ? window : globalThis);
