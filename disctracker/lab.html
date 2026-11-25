@@ -1,0 +1,974 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DiscTracker Lab</title>
+<meta name="description" content="Every reading of a throw on one screen: the sensor's streams, the disc's own trigger and release decisions, the rebuild past the sensor's limits, and the true throw for simulated ones.">
+<style>
+  :root {
+    --bg: #0b0f14; --card: rgba(14, 19, 27, 0.97); --line: rgba(255, 255, 255, 0.14); --text: #f3f6fa; --muted: #a7b2c0;
+    --accent: #ff8a1f; --good: #34d399; --bad: #f87171; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
+  button, select, input { font: inherit; color: var(--text); }
+  button { background: #1a212b; border: 1px solid var(--line); border-radius: 9px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: rgba(255, 255, 255, 0.4); }
+  button.primary { background: var(--accent); color: #1c0e00; border-color: transparent; font-weight: 700; }
+  button.small { padding: 3px 9px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  select, input { background: #1a212b; border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+  input[type=number] { width: 70px; }
+  input[type=range] { width: 100%; padding: 0; }
+  a { color: #9fd3ff; }
+  header { display: flex; gap: 14px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .brand { font-weight: 800; letter-spacing: .02em; font-size: 16px; }
+  .brand span { color: var(--accent); }
+  header .note { color: var(--muted); font-size: 13px; }
+  header .links { margin-left: auto; font-size: 13px; display: flex; gap: 12px; }
+  #wrap { display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: 0; }
+  #side { border-right: 1px solid var(--line); overflow-y: auto; padding: 10px 12px 40px; }
+  #main { display: block; min-height: 0; min-width: 0; overflow-y: auto; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 0 6px; }
+  h2:first-child { margin-top: 2px; }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tabs button.on { background: var(--accent); color: #1c0e00; border-color: transparent; font-weight: 700; }
+  .ctl { display: grid; grid-template-columns: 112px 1fr 64px; gap: 4px 8px; align-items: center; margin: 3px 0; font-size: 13px; }
+  .ctl label { color: var(--muted); }
+  .ctl output { text-align: right; font-variant-numeric: tabular-nums; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .note { color: var(--muted); font-size: 12px; margin: 4px 0; }
+  .src { display: none; }
+  .src.on { display: block; }
+  #caps { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px 4px; align-items: center; min-height: 40px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; background: #121821; }
+  .chip.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .chip .ok { color: var(--good); } .chip .no { color: var(--bad); } .chip .q { color: var(--muted); }
+  #bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 2px 12px 6px; font-size: 12px; color: var(--muted); }
+  #bar b { color: var(--text); }
+  #cvwrap { position: relative; height: max(700px, calc(100vh - 130px)); margin: 0 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+  #cv { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  #cv.drag { cursor: grabbing; }
+  #tip { position: absolute; pointer-events: none; background: rgba(8, 11, 16, 0.94); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+         font-size: 11.5px; line-height: 1.35; display: none; z-index: 2; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  #busy { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: var(--muted); font-size: 15px; background: rgba(11, 15, 20, 0.6); z-index: 3; border-radius: 12px; }
+  #below { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 10px; padding: 10px 8px 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+  .card h3 { margin: 0 0 6px; font-size: 14px; }
+  ol.rules { margin: 0; padding-left: 20px; }
+  ol.rules li { margin: 4px 0; }
+  .pass { color: var(--good); font-weight: 700; } .fail { color: var(--bad); font-weight: 700; } .na { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; }
+  td .e { font-size: 11px; margin-left: 4px; }
+  .eg { color: var(--good); } .ew { color: var(--warn); } .eb { color: var(--bad); }
+  #batchCard { grid-column: 1 / -1; }
+  #batchPlot { width: 100%; height: 300px; display: block; }
+  .legend-note span { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin: 0 4px 0 10px; }
+  details summary { cursor: pointer; color: var(--muted); }
+  kbd { background: #1a212b; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 11px; }
+  @media (max-width: 900px) {
+    body { overflow: auto; } #wrap { grid-template-columns: 1fr; } #side { border-right: 0; border-bottom: 1px solid var(--line); max-height: none; }
+    #main { overflow: visible; } #cvwrap { height: 900px; } #below { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Disc<span>Tracker</span> Lab</div>
+  <div class="note">Every reading of a throw on one screen: what the sensor streamed, what the disc decided and when, what the pages rebuild, and – for a simulated throw – what really happened.</div>
+  <div class="links"><a href="sim.html">Computer simulator (live data)</a><a href="disc3d.html">3D disc</a><a href="./">Phone app</a><a href="calibrate.html">Calibrate</a></div>
+</header>
+<div id="wrap">
+<aside id="side">
+  <h2>Look at</h2>
+  <div class="tabs" id="srcTabs">
+    <button data-src="throw" class="on">A simulated throw</button>
+    <button data-src="hand">Handling (not a throw)</button>
+    <button data-src="file">A recording</button>
+  </div>
+
+  <div class="src on" id="src-throw">
+    <p class="note">A throw made up on this computer, with the sensor's limits, noise and timing. Because it is made up, the true
+      throw is known, so every number can be checked against it.</p>
+    <div class="row"><select id="tStyle"><option value="-1">Backhand</option><option value="1">Forehand</option></select>
+      <select id="tPreset"><option value="">Pick a throw…</option><option value="putt">Putt</option><option value="approach">Approach</option>
+        <option value="drive">Hard drive</option><option value="max">Very hard drive</option></select></div>
+    <div class="ctl"><label for="tMph">Speed</label><input type="range" id="tMph" min="10" max="80" step="1" value="55"><output>55 mph</output></div>
+    <div class="ctl"><label for="tRpm">Spin</label><input type="range" id="tRpm" min="100" max="1500" step="10" value="1000"><output></output></div>
+    <div class="ctl"><label for="tHyzer">Hyzer</label><input type="range" id="tHyzer" min="-20" max="20" step="1" value="5"><output></output></div>
+    <div class="ctl"><label for="tNose">Nose</label><input type="range" id="tNose" min="-10" max="10" step="0.5" value="0"><output></output></div>
+    <div class="ctl"><label for="tLaunch">Launch</label><input type="range" id="tLaunch" min="-5" max="20" step="1" value="7"><output></output></div>
+    <div class="ctl"><label for="tWobble">Wobble</label><input type="range" id="tWobble" min="0" max="10" step="0.5" value="3"><output></output></div>
+    <details><summary>The pull, the wind-up and the sensor</summary>
+      <div class="ctl"><label for="tPull" title="How long the pull takes, from the start of the forward pull to the release">Pull time</label><input type="range" id="tPull" min="0.10" max="0.45" step="0.01" value="0.16"><output></output></div>
+      <div class="ctl"><label for="tPeak" title="Where in the pull the hand pushes hardest: later = a sharper pull">Hardest push at</label><input type="range" id="tPeak" min="0.40" max="0.80" step="0.01" value="0.65"><output></output></div>
+      <div class="ctl"><label for="tSnap" title="How long the wrist snap that spins the disc up takes">Wrist snap</label><input type="range" id="tSnap" min="0.02" max="0.10" step="0.005" value="0.05"><output></output></div>
+      <div class="ctl"><label for="tSnapShape">Snap timing</label><select id="tSnapShape"><option value="late">mostly late</option><option value="smooth">even</option><option value="early">mostly early</option></select><span></span></div>
+      <div class="ctl"><label for="tTurn" title="How much the arm's path curves before it straightens at release">Arm path curve</label><input type="range" id="tTurn" min="0" max="110" step="5" value="70"><output></output></div>
+      <div class="ctl"><label for="tStill" title="How long the disc is held still before the reach-back">Held still</label><input type="range" id="tStill" min="0.05" max="1.5" step="0.05" value="0.9"><output></output></div>
+      <div class="ctl"><label for="tReach">Reach-back</label><input type="range" id="tReach" min="0.2" max="1.2" step="0.05" value="0.4"><output></output></div>
+      <div class="ctl"><label for="tR" title="How far the sensor sits from the disc's center (4.3 mm measured on one tracker)">Sensor off center</label><input type="range" id="tR" min="0" max="15" step="0.1" value="4.3"><output></output></div>
+      <div class="ctl"><label for="tH" title="How far the sensor sits above the disc's middle">Sensor height</label><input type="range" id="tH" min="0" max="12" step="0.5" value="5"><output></output></div>
+      <div class="ctl"><label for="tEnd">Ends in</label><select id="tEnd"><option value="1000">open field</option><option value="3">a net 3 m away</option><option value="6">a net 6 m away</option><option value="20">the ground, 20 m</option></select><span></span></div>
+      <div class="ctl"><label for="tSeed" title="The random part: grip, noise, the wobble's phase">Variation</label><input type="number" id="tSeed" value="1" min="1" step="1"><span></span></div>
+    </details>
+    <div class="row"><button class="primary" id="tGo">Throw it</button><button id="tRandom">A random throw</button></div>
+  </div>
+
+  <div class="src" id="src-hand">
+    <p class="note">Everyday handling that must not count as a throw. Each one is made up on this computer with the same sensor model.</p>
+    <div class="row"><select id="hKind"></select></div>
+    <div class="row"><label class="note">Variation <input type="number" id="hSeed" value="1" min="1" step="1"></label><button class="primary" id="hGo">Show it</button><button id="hNext">Another one</button></div>
+  </div>
+
+  <div class="src" id="src-file">
+    <p class="note">Open what the disc recorded:</p>
+    <ul class="note" style="margin:0 0 6px;padding-left:18px">
+      <li>a raw recording folder from the simulator (<code>part_0001.bin</code>, … – pick them all),</li>
+      <li>the phone's <b>Raw file (for disclab)</b> (<code>disc_log_….bin</code>),</li>
+      <li>the simulator's throw log <b>Data file</b> (<code>disc_throw_log_….json</code>),</li>
+      <li>a CSV of readings (columns <code>gyro_x_dps</code> … <code>accel_z_g</code>).</li>
+    </ul>
+    <div class="row"><input type="file" id="fIn" multiple accept=".bin,.json,.csv"></div>
+    <p class="note">Or drop the files anywhere on this page. Nothing leaves this computer.</p>
+    <div class="row"><button id="fStore">Throws saved in this browser</button></div>
+    <div class="row"><select id="fPick" style="width:100%;display:none"></select></div>
+    <p class="note" id="fNote"></p>
+  </div>
+
+  <h2>The disc's rules</h2>
+  <div class="ctl"><label for="dVer">Firmware</label><select id="dVer"><option value="auto">as recorded</option><option value="5">v5 (on the trackers now)</option><option value="7">v7 (main, not flashed yet)</option></select><span></span></div>
+  <div class="ctl"><label for="dLevel">Sensitivity</label><select id="dLevel"><option value="auto">as recorded</option><option value="1">1 hand tests</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 real throws</option></select><span></span></div>
+  <div class="ctl"><label for="dK" title="The disc's drag ratio (learned by the pages from three gentler throws of the same disc). Turns on the drag speedometer for hard throws. Blank = not learned yet.">Drag ratio</label><input type="number" id="dK" step="0.0001" min="0" value="0.0061" style="width:90px"><span></span></div>
+  <p class="note">A simulated throw uses v7 and level 5 unless you pick otherwise. "As recorded" uses the rules of the firmware that made the recording.</p>
+
+  <h2>How to read the graphs</h2>
+  <p class="note">Scroll the mouse wheel to zoom in and out in time, drag to move, double-click to see the whole capture again.
+    Point at a graph to read every value at that moment. Click a name in a graph's key to hide or show it.</p>
+  <p class="note legend-note">Solid lines: what the sensor read. <span style="background:#e5e7eb;border-top:1px dashed #e5e7eb;height:0"></span>dashed: what a sensor without limits
+    would have read (simulated throws only). <span style="background:#ff6b3d"></span>orange: the pages' rebuild past the limits.
+    Red band: the sensor maxed out.</p>
+  <details><summary>What each graph is</summary>
+    <ol class="note" style="padding-left:18px">
+      <li><b>Force on each axis</b>: the accelerometer, in g. x and y lie in the disc's face, z points out of its top. It stops at 16 g.</li>
+      <li><b>Rotation on each axis</b>: the gyroscope, in °/s. z is the spin. It stops at about 2294 °/s (382 rpm).</li>
+      <li><b>Total force</b> and <b>total rotation</b>: what the trigger looks at. A capture starts when either passes its line.</li>
+      <li><b>Hand force</b>: the force with the disc's own steady part taken off (its spin force and, in flight, the air). The release
+        test needs it under its line for 25 ms; in flight, a jump over 4 g is a hit. The coloured strip under it says which part of the
+        release test failed at each moment.</li>
+      <li><b>Spin</b> and <b>speed</b>: what the disc and the rebuild work out, against the truth.</li>
+      <li><b>What the disc was doing</b>: filling its history, ready, capturing, recording the flight, waiting.</li>
+    </ol>
+  </details>
+</aside>
+
+<main id="main">
+  <div id="caps"><span class="note">Loading the disc's analysis from the simulator page…</span></div>
+  <div id="bar"><span id="barInfo"></span><span style="flex:1"></span>
+    <button class="small" data-zoom="all">Whole recording</button><button class="small" data-zoom="cap">This capture</button>
+    <button class="small" data-zoom="pull">Pull and release</button><button class="small" data-zoom="flight">Flight</button>
+    <label><input type="checkbox" id="showTruth" checked> truth</label><label><input type="checkbox" id="showRebuilt" checked> rebuilt</label></div>
+  <div id="cvwrap"><canvas id="cv"></canvas><div id="tip"></div><div id="busy">Working…</div></div>
+  <div id="below">
+    <div class="card"><h3>The disc's rules, step by step, for this capture</h3><ol class="rules" id="rules"><li class="na">Pick a throw on the left.</li></ol></div>
+    <div class="card"><h3>The six numbers</h3><div id="six"></div><p class="note" id="sixNote"></p></div>
+    <div class="card" id="batchCard"><h3>How accurate is it over many throws?</h3>
+      <p class="note">Makes up many throws in a range of speeds, with the sensor settings on the left, and compares every number with the truth:
+        the disc's own analysis (the firmware picked on the left), the pages' rebuild from the pull alone, and the rebuild with the drag speedometer.
+        Each dot is one throw.</p>
+      <div class="row"><label class="note">From <input type="number" id="bLo" value="20" min="10" max="80"> to <input type="number" id="bHi" value="75" min="10" max="80"> mph</label>
+        <label class="note">Throws <select id="bN"><option>30</option><option selected>60</option><option>120</option><option>240</option></select></label>
+        <label class="note">Show <select id="bWhat"><option value="speed">speed error (mph)</option><option value="nose">nose error (°)</option><option value="launch">launch error (°)</option>
+          <option value="hyzer">hyzer error (°)</option><option value="spin">spin error (rpm)</option></select></label>
+        <button class="primary" id="bGo">Run</button><span class="note" id="bState"></span></div>
+      <canvas id="batchPlot"></canvas><div id="batchTable"></div>
+    </div>
+  </div>
+</main>
+</div>
+
+<script src="flight.js?v=2026-11-01"></script>
+<script src="track.js?v=2026-11-01b"></script>
+<script src="bench/gen.js?v=2026-11-23"></script>
+<script src="bench/handling.js?v=2026-11-23"></script>
+<script src="bench/firmware.js?v=2026-11-23"></script>
+<script src="bench/simcode.js?v=2026-11-23"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const D2R = Math.PI / 180, R2D = 180 / Math.PI, GMS = 9.80665, MPH = 2.2369363, TAU = 2 * Math.PI;
+const AL0 = 0.000488, GL0 = 0.07, SAT = 32200, EXTRA = 160;
+// colours: the simulator page's (COL in sim.html)
+const COL = { x: "#f87171", y: "#4ade80", z: "#60a5fa", abs: "#cbd5e1", hand: "#fb923c", spinG: "#60a5fa", spinC: "#c084fc", speed: "#fbbf24",
+  fill: "#e879f9", rebuilt: "#ff6b3d", truth: "#e5e7eb", disc: "#fbbf24", rot: "#a5b4fc" };
+const FW = window.DiscFirmware, STATE = FW.STATE;
+let SC = null;                                                 // the disc's analysis, from sim.html (DiscSimCode)
+let ds = null;                                                 // what is on screen: { name, S, rate, info, sim?, file?, fw, caps }
+let sel = -1;                                                  // the capture being looked at
+const view = { i0: 0, i1: 1000 };
+const fmt = (v, d = 1) => Number.isFinite(v) ? v.toFixed(d) : "–";
+const sgn = (v, d = 1) => Number.isFinite(v) ? (v > 0 ? "+" : "") + v.toFixed(d) : "–";
+
+// ---------------------------------------------------------------- the left panel
+const sliderUnits = { tMph: v => `${v} mph`, tRpm: v => `${v} rpm`, tHyzer: v => `${v}°`, tNose: v => `${v}°`, tLaunch: v => `${v}°`, tWobble: v => `${v}°`,
+  tPull: v => `${(+v).toFixed(2)} s`, tPeak: v => `${Math.round(v * 100)} %`, tSnap: v => `${Math.round(v * 1000)} ms`, tTurn: v => `${v}°`,
+  tStill: v => `${(+v).toFixed(2)} s`, tReach: v => `${(+v).toFixed(2)} s`, tR: v => `${(+v).toFixed(1)} mm`, tH: v => `${(+v).toFixed(1)} mm` };
+for (const [id, f] of Object.entries(sliderUnits)) {
+  const el = $(id), out = el.parentElement.querySelector("output");
+  const upd = () => { if (out) out.textContent = f(el.value); };
+  el.addEventListener("input", upd); upd();
+}
+// the pull's length and shape follow the speed until changed by hand (faster throws pull shorter and peakier)
+let pullTouched = false;
+["tPull", "tPeak", "tSnap"].forEach(id => $(id).addEventListener("input", () => { pullTouched = true; }));
+function pullFor(mph) { return mph > 60 ? { T: 0.14, ap: 0.72, snap: 0.04 } : mph > 42 ? { T: 0.16, ap: 0.65, snap: 0.05 } : mph > 28 ? { T: 0.19, ap: 0.6, snap: 0.05 } : { T: 0.3, ap: 0.55, snap: 0.07 }; }
+function setSlider(id, v) { const el = $(id); el.value = v; el.dispatchEvent(new Event("input")); }
+$("tMph").addEventListener("input", () => {
+  if (pullTouched) return;
+  const p = pullFor(+$("tMph").value); setSlider("tPull", p.T); setSlider("tPeak", p.ap); setSlider("tSnap", p.snap); pullTouched = false;
+});
+const PRESETS = { putt: { mph: 20, rpm: 380, hyzer: 0, nose: 0, launch: 5, wobble: 1.5, end: "6" }, approach: { mph: 38, rpm: 700, hyzer: 5, nose: 0, launch: 8, wobble: 2.5, end: "1000" },
+  drive: { mph: 60, rpm: 1050, hyzer: 6, nose: 1, launch: 9, wobble: 3.5, end: "1000" }, max: { mph: 72, rpm: 1250, hyzer: 8, nose: 2, launch: 10, wobble: 4.5, end: "1000" } };
+$("tPreset").onchange = () => {
+  const p = PRESETS[$("tPreset").value]; if (!p) return;
+  pullTouched = false; setSlider("tMph", p.mph); setSlider("tRpm", p.rpm); setSlider("tHyzer", p.hyzer); setSlider("tNose", p.nose); setSlider("tLaunch", p.launch);
+  setSlider("tWobble", p.wobble); $("tEnd").value = p.end; $("tMph").dispatchEvent(new Event("input"));
+};
+$("tMph").dispatchEvent(new Event("input"));
+for (const b of document.querySelectorAll("#srcTabs button")) b.onclick = () => {
+  document.querySelectorAll("#srcTabs button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".src").forEach(x => x.classList.toggle("on", x.id === "src-" + b.dataset.src));
+};
+for (const k of DiscHandling.KINDS) { const o = document.createElement("option"); o.value = k; o.textContent = DiscHandling.NAMES[k]; $("hKind").appendChild(o); }
+
+// ---------------------------------------------------------------- making a throw or a piece of handling
+const BIAS_SIM = [0.45, -2.5, -0.85];                          // gen.js's gyro zero error, which the disc knows from its calibration
+function simInfo(r) { return { alsb: AL0, glsb: GL0, bias: BIAS_SIM.slice(), radius: r, locked: true, logVer: 7, sens: 5, rateHz: 418.6 }; }
+function makeSimThrow() {
+  const mph = +$("tMph").value, end = +$("tEnd").value;
+  const P = { V: mph / MPH, rpm: +$("tRpm").value, dir: +$("tStyle").value, T: +$("tPull").value, accelPeak: +$("tPeak").value, snap: +$("tSnap").value,
+    snapShape: $("tSnapShape").value, turn: +$("tTurn").value, hyzer: +$("tHyzer").value, nose: +$("tNose").value, launch: +$("tLaunch").value,
+    wobble: +$("tWobble").value, wobbleRamp: 0.03, wobbleTau: 0.5, r: +$("tR").value / 1000, h: +$("tH").value / 1000, still: +$("tStill").value,
+    reach: +$("tReach").value, net: end, spinTauHit: end === 20 ? 0.4 : 0.03, table: "wraith", seed: +$("tSeed").value || 1, lead: 1.2, afterHit: end < 100 ? 3.2 : 0.35 };
+  const t = DiscGen.makeThrow(P);
+  return { kind: "throw", name: `Simulated ${P.dir > 0 ? "forehand" : "backhand"}: ${mph} mph, ${P.rpm} rpm`, S: t.rawAll, rawU: t.rawUAll, rate: t.rate,
+    info: simInfo(P.r), sim: { P, t, kPull: t.t2 * t.rate, kRel: t.start + t.truth.kRel, kImp: t.truth.kImp != null ? t.start + t.truth.kImp : null, speed: t.truth.speedAll, truth: t.truth } };
+}
+function makeHandling() {
+  const kind = $("hKind").value, h = DiscHandling.make(kind, { seed: +$("hSeed").value || 1 });
+  return { kind: "hand", name: DiscHandling.NAMES[kind], S: h.raw, rawU: h.rawU, rate: h.rate, info: simInfo(0.0043),
+    sim: { hand: h, events: h.events.map(e => ({ i: e.t * h.rate, what: e.what })) } };
+}
+$("tGo").onclick = () => show(makeSimThrow);
+$("tRandom").onclick = () => {
+  const r = (a, b) => a + (b - a) * Math.random(), mph = Math.round(r(18, 76));
+  pullTouched = false; setSlider("tMph", mph); setSlider("tRpm", Math.round((300 + 13 * mph + r(-150, 150)) / 10) * 10);
+  setSlider("tHyzer", Math.round(r(-8, 15))); setSlider("tNose", Math.round(r(-4, 5) * 2) / 2); setSlider("tLaunch", Math.round(r(0, 14)));
+  setSlider("tWobble", Math.round(r(0.5, 6) * 2) / 2); setSlider("tH", Math.round(r(3, 8) * 2) / 2); $("tStyle").value = Math.random() < 0.3 ? "1" : "-1";
+  $("tSnapShape").value = ["late", "smooth", "early"][Math.floor(Math.random() * 3)]; setSlider("tTurn", Math.round(r(40, 90) / 5) * 5);
+  $("tSeed").value = Math.floor(r(1, 9999)); $("tMph").dispatchEvent(new Event("input"));
+  show(makeSimThrow);
+};
+$("hGo").onclick = () => show(makeHandling);
+$("hNext").onclick = () => { $("hSeed").value = (+$("hSeed").value || 1) + 1; show(makeHandling); };
+
+// ---------------------------------------------------------------- reading files
+const LOG_MAGIC = 0x474F4C44;
+function parseLog(buf) {
+  const dv = new DataView(buf), recs = []; let o = 0;
+  while (o + 256 <= buf.byteLength) {
+    if (dv.getUint32(o, true) !== LOG_MAGIC) { o = Math.ceil((o + 1) / 256) * 256; continue; }   // not a header: try the next 256-byte boundary
+    const u8 = k => dv.getUint8(o + k), u16 = k => dv.getUint16(o + k, true), u32 = k => dv.getUint32(o + k, true), f32 = k => dv.getFloat32(o + k, true);
+    const ver = u16(4), type = u16(6), len = u32(8), n = u16(24);
+    if (len < 256 + 12 * n || o + 256 + 12 * n > buf.byteLength) break;
+    const h = { ver, type, len, recNo: u32(12), boot: u16(16), sens: u8(18), end: u8(19), tMs: u32(20), n, odr: u16(26) || 416, rel: u16(28), liveRel: u16(30),
+      counted: u8(32), src: u8(33), flags: u16(34), res: Array.from({ length: 10 }, (_, k) => f32(36 + 4 * k)), bias: [f32(76), f32(80), f32(84)],
+      radius: f32(124), trigG: f32(132), trigDps: f32(136), freeG: f32(140), minPeak: f32(144), minSpin: f32(148), alsb: f32(152) || AL0, glsb: f32(156) || GL0 };
+    if (ver >= 4) Object.assign(h, { relMinRpm: f32(160), relPeakG: f32(164), calFlags: u16(172), seq0: u32(184) });
+    if (ver >= 5) Object.assign(h, { why: u8(193), flags2: u16(194), linkNo: u32(196), capPeakG: f32(200) });
+    const r204 = ver >= 5 ? f32(204) : 0, r192 = f32(192);
+    h.rateHz = r204 > 380 && r204 < 460 ? r204 : r192 > 380 && r192 < 460 ? r192 : 0;
+    h.S = new Int16Array(buf.slice(o + 256, o + 256 + 12 * n));
+    recs.push(h);
+    o += len;
+  }
+  return recs;
+}
+function infoFromHeader(h) {
+  return { alsb: h.alsb, glsb: h.glsb, bias: h.bias, radius: h.radius > 0.0005 && h.radius < 0.03 ? h.radius : 0, locked: !!((h.calFlags || 0) & 2),
+    logVer: h.ver, sens: h.sens || 5, rateHz: h.rateHz || 0 };
+}
+// Turn the records into things to look at: one continuous recording (type 2 records in a row) with the disc's captures placed in it,
+// or, without one, each capture with its flight tail after it.
+function fileDatasets(recs, name) {
+  const out = [], streams = recs.filter(r => r.type === 2 && r.n), caps = recs.filter(r => r.type === 1), tails = recs.filter(r => r.type === 5), marks = recs.filter(r => r.type === 3);
+  if (streams.length) {
+    const parts = []; let cur = null;
+    for (const r of streams) {
+      if (r.seq0 == null) r.seq0 = cur ? cur.seq1 : 0;          // log version 3 and older: no sample numbers, the records follow on
+      if (cur && r.seq0 === cur.seq1 && r.boot === cur.boot) { cur.recs.push(r); cur.seq1 += r.n; }
+      else { cur = { recs: [r], seq0: r.seq0, seq1: r.seq0 + r.n, boot: r.boot }; parts.push(cur); }
+    }
+    // one recording; a gap between parts is marked so the disc's loop starts over there
+    const n = parts.reduce((s, p) => s + p.seq1 - p.seq0, 0), S = new Int16Array(n * 6), gap = new Uint8Array(n), seqAt = new Float64Array(n);
+    let k = 0;
+    for (const p of parts) {
+      if (k) gap[k] = 1;
+      for (const r of p.recs) { S.set(r.S, k * 6); for (let j = 0; j < r.n; j++) seqAt[k + j] = r.seq0 + j; k += r.n; }
+    }
+    const idxOf = (seq, boot) => { for (let i = 0; i < n; i++) if (seqAt[i] === seq) return i; return -1; };
+    const discCaps = caps.map(c => ({ h: c, i: c.seq0 != null ? idxOf(c.seq0) : -1 })).filter(x => x.i >= 0);
+    const first = streams[0];
+    out.push({ kind: "file", name: `${name}: continuous recording, ${(n / (first.rateHz || 418.6) / 60).toFixed(1)} min`, S, gap, rate: first.rateHz || 418.6,
+      info: infoFromHeader(first), file: { discCaps, marks } });
+  }
+  for (const c of caps) {
+    if (!c.n) continue;
+    const tl = tails.filter(t => t.linkNo === c.recNo).sort((a, b) => a.seq0 - b.seq0);
+    const n = c.n + tl.reduce((s, t) => s + t.n, 0), S = new Int16Array(n * 6);
+    S.set(c.S, 0); let k = c.n; for (const t of tl) { S.set(t.S, k * 6); k += t.n; }
+    const res = c.res, what = c.counted ? `counted, ${res[0].toFixed(1)} mph` : `not counted`;
+    out.push({ kind: "file", name: `${name}: capture #${c.recNo} (${what})`, S, rate: c.rateHz || 418.6, info: infoFromHeader(c), file: { cap: c, tailN: n - c.n } });
+  }
+  return out;
+}
+function throwLogDatasets(js, name) {
+  const out = [];
+  for (const t of js.throws || []) {
+    const b64 = t.samples_b64_int16_gx_gy_gz_ax_ay_az; if (!b64) continue;
+    const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    const S = new Int16Array(u.buffer), I = t.info || {}, c = t.c || {};
+    const res = c.res || [];
+    out.push({ kind: "file", name: `${new Date(t.at).toLocaleString()} – ${c.counted ? "counted" : "not counted"}${res[0] != null ? `, ${(+res[0]).toFixed(1)} mph` : ""}${t.label && t.label.type ? ` (${t.label.type})` : ""}`,
+      S, rate: I.rateHz > 380 ? I.rateHz : 418.6,
+      info: { alsb: I.alsb || AL0, glsb: I.glsb || GL0, bias: I.bias || [0, 0, 0], radius: I.radius > 0.0005 ? I.radius : 0, locked: !!((I.calFlags || 0) & 2), logVer: I.logVer || 5, sens: I.sens || 5, rateHz: I.rateHz || 0 },
+      file: { logThrow: t } });
+  }
+  return out;
+}
+function csvDatasets(text, name) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim()), head = lines[0].split(",").map(s => s.trim().toLowerCase());
+  const col = k => head.indexOf(k), cols = ["gyro_x_dps", "gyro_y_dps", "gyro_z_dps", "accel_x_g", "accel_y_g", "accel_z_g"].map(col);
+  if (cols.some(c => c < 0)) throw new Error("this CSV has no gyro_x_dps … accel_z_g columns");
+  const n = lines.length - 1, S = new Int16Array(n * 6);
+  for (let i = 0; i < n; i++) {
+    const f = lines[i + 1].split(",");
+    for (let k = 0; k < 6; k++) { const v = parseFloat(f[cols[k]]); S[i * 6 + k] = Math.max(-32768, Math.min(32767, Math.round((k < 3 ? v / GL0 : v / AL0) || 0))); }
+  }
+  return [{ kind: "file", name: `${name} (${n} readings)`, S, rate: 418.6, info: { alsb: AL0, glsb: GL0, bias: [0, 0, 0], radius: 0, locked: false, logVer: 5, sens: 5, rateHz: 0 }, file: {} }];
+}
+let fileSets = [];
+async function openFiles(files) {
+  files = Array.from(files).sort((a, b) => a.name.localeCompare(b.name));
+  if (!files.length) return;
+  $("fNote").textContent = "Reading…";
+  try {
+    const sets = [], bins = files.filter(f => /\.bin$/i.test(f.name));
+    if (bins.length) {                                         // the parts of one recording read as one log
+      const bufs = await Promise.all(bins.map(f => f.arrayBuffer()));
+      const all = new Uint8Array(bufs.reduce((s, b) => s + b.byteLength, 0)); let o = 0; for (const b of bufs) { all.set(new Uint8Array(b), o); o += b.byteLength; }
+      sets.push(...fileDatasets(parseLog(all.buffer), bins.length > 1 ? `${bins[0].name} – ${bins[bins.length - 1].name}` : bins[0].name));
+    }
+    for (const f of files.filter(f => /\.json$/i.test(f.name))) sets.push(...throwLogDatasets(JSON.parse(await f.text()), f.name));
+    for (const f of files.filter(f => /\.csv$/i.test(f.name))) sets.push(...csvDatasets(await f.text(), f.name));
+    setFileSets(sets, `${files.length} file${files.length > 1 ? "s" : ""}`);
+  } catch (err) { $("fNote").textContent = `Could not read that: ${err.message}`; console.error(err); }
+}
+function setFileSets(sets, what) {
+  fileSets = sets;
+  const p = $("fPick"); p.innerHTML = "";
+  sets.forEach((s, i) => { const o = document.createElement("option"); o.value = i; o.textContent = s.name; p.appendChild(o); });
+  p.style.display = sets.length > 1 ? "" : "none";
+  $("fNote").textContent = sets.length ? `${what}: ${sets.length} thing${sets.length > 1 ? "s" : ""} to look at.` : `${what}: nothing with readings in it.`;
+  if (sets.length) show(() => sets[0]);
+}
+$("fPick").onchange = () => show(() => fileSets[+$("fPick").value]);
+$("fIn").onchange = e => openFiles(e.target.files);
+document.addEventListener("dragover", e => { e.preventDefault(); });
+document.addEventListener("drop", e => {
+  e.preventDefault(); if (!e.dataTransfer.files.length) return;
+  document.querySelector('#srcTabs [data-src="file"]').click(); openFiles(e.dataTransfer.files);
+});
+// The pages' own stores in this browser (read only). Each is opened exactly as its page opens it, so a store that doesn't exist yet
+// is made the same way that page would make it.
+function readStore(db, store, key, inc) {
+  return new Promise(res => {
+    try {
+      const r = indexedDB.open(db, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore(store, inc ? { keyPath: key, autoIncrement: true } : { keyPath: key });
+      r.onerror = () => res([]);
+      r.onsuccess = () => {
+        try { const tx = r.result.transaction(store, "readonly"), q = tx.objectStore(store).getAll(); q.onsuccess = () => { res(q.result || []); r.result.close(); }; q.onerror = () => res([]); }
+        catch { res([]); }
+      };
+    } catch { res([]); }
+  });
+}
+$("fStore").onclick = async () => {
+  $("fNote").textContent = "Looking…";
+  const sets = [];
+  const log = await readStore("disctracker-throwlog", "throws", "id");
+  for (const t of log.sort((a, b) => a.at - b.at)) {
+    if (!t.S) continue;
+    const S = t.S instanceof Int16Array ? t.S : new Int16Array(t.S.buffer || t.S), I = t.info || {}, c = t.c || {}, res = c.res || [];
+    sets.push({ kind: "file", name: `Simulator log ${new Date(t.at).toLocaleString()} – ${c.counted ? "counted" : "not counted"}${res[0] != null ? `, ${(+res[0]).toFixed(1)} mph` : ""}`,
+      S, rate: I.rateHz > 380 ? I.rateHz : 418.6, info: { alsb: I.alsb || AL0, glsb: I.glsb || GL0, bias: I.bias || [0, 0, 0], radius: I.radius > 0.0005 ? I.radius : 0,
+        locked: !!((I.calFlags || 0) & 2), logVer: I.logVer || 5, sens: I.sens || 5, rateHz: I.rateHz || 0 }, file: { logThrow: t } });
+  }
+  const rp = await readStore("disc3d.replays.v1", "throws", "id");
+  for (const t of rp.sort((a, b) => a.t - b.t)) {
+    if (!t.S) continue;
+    const S = t.S instanceof Int16Array ? t.S : new Int16Array(t.S.buffer || t.S), c = t.c || {};
+    sets.push({ kind: "file", name: `3D replay ${new Date(t.t).toLocaleString()}`, S, rate: c.rate > 380 ? c.rate : 418.6,
+      info: { alsb: c.alsb || AL0, glsb: GL0, bias: c.bias || [0, 0, 0], radius: c.radius > 0.0005 ? c.radius : 0, locked: false, logVer: 5, sens: 5, rateHz: 0 }, file: {} });
+  }
+  const recs = await readStore("disctracker", "recordings", "id", true);
+  for (const r of recs) {
+    const bytes = r.bytes || r.data || r.buf; if (!bytes) continue;
+    try { sets.push(...fileDatasets(parseLog(bytes.buffer ? bytes.buffer.slice(bytes.byteOffset || 0) : bytes), `Phone recording ${r.name || r.id}`)); } catch {}
+  }
+  setFileSets(sets, "Saved in this browser");
+};
+
+// ---------------------------------------------------------------- the disc's loop and the rebuild on what is shown
+function show(make) {
+  if (!SC) return;
+  $("busy").style.display = "flex";
+  setTimeout(() => {
+    try { ds = make(); analyze(); }
+    catch (err) { console.error(err); $("caps").innerHTML = `<span class="note" style="color:var(--bad)">That didn't work: ${err.message}</span>`; }
+    $("busy").style.display = "none";
+  }, 20);
+}
+function rulesFor(d) {
+  const v = $("dVer").value, l = $("dLevel").value;
+  const ver = v === "auto" ? (d.sim ? 7 : d.info.logVer >= 6 ? d.info.logVer : 5) : +v, level = l === "auto" ? (d.sim ? 5 : d.info.sens || 5) : +l;
+  return { ver, level };
+}
+function analyze() {
+  if (!ds) return;
+  const { ver, level } = rulesFor(ds), I = ds.info;
+  ds.ver = ver; ds.level = level;
+  ds.fw = FW.run(ds.S, { an: SC, ver, level, alsb: I.alsb, glsb: I.glsb, bias: I.bias, radius: I.radius, locked: I.locked, rateHz: ver >= 6 ? (I.rateHz || (ds.sim ? 418.6 : 0)) : 0, gap: ds.gap });
+  ds.caps = ds.fw.captures;
+  ds.dup = new Uint8Array(ds.S.length / 6);
+  for (let i = 1; i < ds.dup.length; i++) { let same = true; for (let k = 0; k < 6; k++) if (ds.S[i * 6 + k] !== ds.S[(i - 1) * 6 + k]) { same = false; break; } ds.dup[i] = same ? 1 : 0; }
+  // the capture to look at: the one holding the true release, else the first counted one, else the first
+  sel = -1;
+  if (ds.sim && ds.sim.kRel != null) sel = ds.caps.findIndex(c => c.start <= ds.sim.kRel && c.start + (c.nUntrimmed || c.n) > ds.sim.kRel);
+  if (sel < 0) sel = ds.caps.findIndex(c => c.counted);
+  if (sel < 0 && ds.caps.length) sel = 0;
+  renderCaps(); zoom(sel >= 0 ? "cap" : "all"); renderSide();
+}
+$("dVer").onchange = analyze; $("dLevel").onchange = analyze;
+$("dK").onchange = () => { if (ds) { for (const c of ds.caps) delete c.rb; renderSide(); draw(); } };
+function rebuildOf(c) {
+  if (c.rb !== undefined) return c.rb;
+  c.rb = null; c.rbK = null;
+  const n = Math.min(c.start + c.n + EXTRA, ds.S.length / 6) - c.start;
+  if (n < 100 || !c.R || !c.counted) return null;               // the pages rebuild the throws the disc reports
+  const Sx = ds.S.slice(c.start * 6, (c.start + n) * 6), I = ds.info, R = c.R;
+  const base = { alsb: I.alsb, glsb: I.glsb, bias: I.bias, radius: I.radius, rate: ds.rate, kI: 0.99, odr: 416, biasTol: 1.5 };
+  const o = { iRel: R.iRel != null && R.iRel < c.n ? R.iRel : undefined, spinRpm: R.spin > 0 ? R.spin : undefined };
+  try { c.rb = DiscTrack.reconstruct(Sx, base, o); } catch (err) { console.warn("rebuild", err); c.rbErr = err.message; }
+  const k = parseFloat($("dK").value);
+  if (k > 0) try { c.rbK = DiscTrack.reconstruct(Sx, Object.assign({}, base, { kAero: k }), o); } catch {}
+  return c.rb;
+}
+
+// ---------------------------------------------------------------- the captures strip
+const WHY = ["counted", "the pull was too weak", "the spin was too low", "no release found", "readings were lost", "handling"];
+const END = ["", "hit something", "flight window full", "3 s limit", "readings lost"];
+function renderCaps() {
+  const el = $("caps"); el.innerHTML = "";
+  const t = document.createElement("span"); t.className = "note"; t.style.marginRight = "6px";
+  t.textContent = `${ds.name} · firmware v${ds.ver}, level ${ds.level} · ${ds.caps.length ? `the disc made ${ds.caps.length} capture${ds.caps.length > 1 ? "s" : ""}:` : "the disc never triggered"}`;
+  el.appendChild(t);
+  ds.caps.forEach((c, k) => {
+    const b = document.createElement("span"); b.className = "chip" + (k === sel ? " on" : "");
+    const tt = (c.trig / ds.rate).toFixed(2);
+    b.innerHTML = c.unfinished ? `<span class="q">${tt} s: still capturing at the end</span>` :
+      c.counted ? `<span class="ok">✓</span> ${tt} s: counted${c.lowConf ? " (low confidence)" : ""}${c.R && c.R.speed ? `, ${c.R.speed.toFixed(1)} mph` : ""}` :
+      c.quiet ? `<span class="q">${tt} s: handling, ignored</span>` : `<span class="no">✗</span> ${tt} s: not counted – ${WHY[c.why] || "?"}`;
+    b.onclick = () => { sel = k; renderCaps(); zoom("cap"); renderSide(); };
+    el.appendChild(b);
+  });
+}
+
+// ---------------------------------------------------------------- series: one value per reading of the stream
+function seriesSet() {
+  const S = ds.S, I = ds.info, AL = I.alsb, GL = I.glsb, rU = ds.rawU, c = ds.caps[sel], R = c && c.R, rb = c && $("showRebuilt").checked ? rebuildOf(c) : null;
+  const rbK = c && c.rbK && c.rbK.info && c.rbK.info.speedSrc === "drag" ? c.rbK : null;
+  const showT = $("showTruth").checked && !!rU;
+  const inCap = i => c && i >= c.start && i < c.start + c.n;
+  const capArr = (A, scale = 1) => A ? i => { const k = i - c.start; return k >= 0 && k < A.length ? A[k] * scale : NaN; } : null;
+  const rbArr = (A, f) => rb && A ? i => { const k = i - c.start; return k >= 0 && k < A.length ? f(A[k]) : NaN; } : null;
+  const raw = (k, s) => i => S[i * 6 + k] * s, tru = (k, s) => i => rU[i * 6 + k] * s;
+  const bias = I.bias;
+  const satA = i => Math.abs(S[i * 6 + 3]) >= SAT || Math.abs(S[i * 6 + 4]) >= SAT || Math.abs(S[i * 6 + 5]) >= SAT;
+  const satG = i => Math.abs(S[i * 6]) >= SAT || Math.abs(S[i * 6 + 1]) >= SAT || Math.abs(S[i * 6 + 2]) >= SAT;
+  const P = [];
+  const L = ds.fw.level, v6 = ds.ver >= 6;
+  P.push({ title: "Force on each axis (g)", w: 1.25, sym: true, sat: satA, series: [
+    { name: "x", color: COL.x, get: raw(3, AL) }, { name: "y", color: COL.y, get: raw(4, AL) }, { name: "z", color: COL.z, get: raw(5, AL) },
+    showT && { name: "x (no limit)", color: COL.x, dash: [4, 3], get: tru(3, AL), truth: true }, showT && { name: "y (no limit)", color: COL.y, dash: [4, 3], get: tru(4, AL), truth: true },
+    showT && { name: "z (no limit)", color: COL.z, dash: [4, 3], get: tru(5, AL), truth: true },
+    rb && { name: "x rebuilt", color: COL.rebuilt, get: rbArr(rb.fx, v => v / GMS), width: 1.4 }, rb && { name: "y rebuilt", color: "#ffb38a", get: rbArr(rb.fy, v => v / GMS), width: 1.4 },
+    R && R.fillAN > 0 && { name: "size filled by v7", color: COL.fill, get: capArr(R.fillA), width: 1.4 },
+  ].filter(Boolean), hlines: [{ v: 16, color: COL.x, label: "16 g: the sensor's top" }, { v: -16, color: COL.x }] });
+  P.push({ title: "Rotation on each axis (°/s)", w: 1.1, sym: true, sat: satG, series: [
+    { name: "x", color: COL.x, get: raw(0, GL) }, { name: "y", color: COL.y, get: raw(1, GL) }, { name: "z = spin", color: COL.z, get: raw(2, GL) },
+    showT && { name: "z (no limit)", color: COL.z, dash: [4, 3], get: tru(2, GL), truth: true },
+    rb && { name: "z rebuilt", color: COL.rebuilt, get: rbArr(rb.wz, v => v * R2D + bias[2]), width: 1.4 },
+  ].filter(Boolean), hlines: [{ v: 2294, color: COL.x, label: "2294 °/s (382 rpm): the gyro's top" }, { v: -2294, color: COL.x }] });
+  P.push({ title: "Total force (g) – the trigger", w: 0.8, min0: true, series: [
+    { name: "total force", color: COL.abs, get: i => Math.hypot(S[i * 6 + 3], S[i * 6 + 4], S[i * 6 + 5]) * AL },
+    showT && { name: "no limit", color: COL.abs, dash: [4, 3], get: i => Math.hypot(rU[i * 6 + 3], rU[i * 6 + 4], rU[i * 6 + 5]) * AL, truth: true },
+  ].filter(Boolean), hlines: [{ v: L.trigG, color: "#94a3b8", label: `trigger ${L.trigG} g` }, { v: L.relPeakG, color: "#a78bfa", label: `the pull must peak over ${L.relPeakG} g` }], cap: 40 });
+  P.push({ title: "Total rotation (°/s) – the trigger", w: 0.7, min0: true, series: [
+    { name: "total rotation", color: COL.rot, get: i => Math.hypot(S[i * 6], S[i * 6 + 1], S[i * 6 + 2]) * GL },
+  ], hlines: [{ v: L.trigDps, color: "#94a3b8", label: `trigger ${L.trigDps} °/s` }].concat(v6 ? [{ v: 200, color: "#4b5563", label: "settled under 200 °/s (re-arm)" }] : []) });
+  P.push({ title: "Hand force (g): force minus the disc's steady part – the release and impact tests", w: 0.95, min0: true, codes: ds.fw.relCode, series: [
+    R && R.hand && { name: "hand force (release test)", color: COL.hand, get: capArr(R.hand), width: 1.5 },
+    { name: "in flight (impact test)", color: "#f87171", get: i => ds.fw.impForce[i] },
+    { name: "flight tail (landing test)", color: "#fca5a5", get: i => ds.fw.landDev[i], dots: true },
+  ].filter(Boolean), hlines: [{ v: L.freeG, color: "#fbbf24", label: `under ${L.freeG} g for 25 ms = left the hand` }].concat(v6 ? [{ v: 5, color: "#fde68a", label: "5 g after a 12 g+ pull", dash: [3, 3] }] : [])
+      .concat([{ v: 4, color: "#f87171", label: "over 4 g after release = hit something", dash: [6, 3] }]), cap: 20 });
+  const spinT = showT ? i => Math.abs(rU[i * 6 + 2] * GL - bias[2]) / 6 : null;
+  P.push({ title: "Spin (rpm)", w: 0.85, min0: true, series: [
+    { name: "gyro z ÷ 6", color: COL.spinG, get: i => Math.abs(S[i * 6 + 2] * GL - bias[2]) / 6 },
+    spinT && { name: "true spin", color: COL.truth, dash: [4, 3], get: spinT, truth: true },
+    rb && { name: "rebuilt", color: COL.rebuilt, get: rbArr(rb.wz, v => Math.abs(v) * 60 / TAU), width: 1.5 },
+    R && R.f1 > R.f0 && { name: `the disc's spin (${["gyro", "drag wave", "off-center force", "wave + force", "wobble", "wobble + force"][R.src] || "gyro"})`, color: COL.disc, width: 2.2,
+      get: i => { const k = i - c.start; return k >= R.f0 && k < R.f1 ? R.spin : NaN; } },
+  ].filter(Boolean), hlines: [{ v: 382, color: COL.x, label: "382 rpm: the gyro's top" }] });
+  P.push({ title: "Speed (mph)", w: 0.85, min0: true, series: [
+    ds.sim && ds.sim.speed && showT && { name: "true speed", color: COL.truth, dash: [4, 3], get: i => ds.sim.speed[i] * MPH, truth: true },
+    R && R.speedTrace && { name: "the disc's add-up", color: COL.disc, get: capArr(R.speedTrace), width: 1.5 },
+    rb && rb.vel && { name: "rebuilt", color: COL.rebuilt, width: 1.5, get: i => { const k = i - c.start - rb.iStart; return k >= 0 && k < rb.vel.length && i - c.start <= rb.info.iRel + 40 ? Math.hypot(...rb.vel[k]) * MPH : NaN; } },
+    rbK && rbK.vel && { name: "rebuilt with the drag speedometer", color: "#fcd34d", width: 1.5, dash: [6, 3], get: i => { const k = i - c.start - rbK.iStart; return k >= 0 && k < rbK.vel.length && i - c.start <= rbK.info.iRel + 40 ? Math.hypot(...rbK.vel[k]) * MPH : NaN; } },
+  ].filter(Boolean) });
+  P.push({ title: "What the disc was doing", w: 0.32, state: true, series: [] });
+  return P;
+}
+
+// ---------------------------------------------------------------- markers: the moments that matter
+function markers() {
+  const M = [], c = ds.caps[sel], R = c && c.R, rb = c && $("showRebuilt").checked ? rebuildOf(c) : null;
+  const add = (i, label, color, dash, row = 0) => { if (Number.isFinite(i) && i >= 0) M.push({ i, label, color, dash, row }); };
+  if (ds.sim) {
+    if (ds.sim.kPull != null) add(ds.sim.kPull, "pull starts (true)", "#9ca3af", [2, 3], 1);
+    if (ds.sim.kRel != null) add(ds.sim.kRel, "release (true)", "#ffffff", [5, 3], 0);
+    if (ds.sim.kImp != null) add(ds.sim.kImp, "hit (true)", "#fca5a5", [5, 3], 1);
+    if (ds.sim.events) for (const e of ds.sim.events) add(e.i, e.what, "#9ca3af", [2, 3], 2);
+  }
+  if (c) {
+    add(c.trig, "trigger", "#94a3b8", null, 2);
+    if (c.rel >= 0) add(c.rel, "release (disc)", COL.disc, null, 0);
+    if (R && R.found && c.start + R.iRel !== c.rel) add(c.start + R.iRel, "release (disc's analysis)", COL.disc, [3, 2], 1);
+    if (c.hitK >= 0) add(c.hitK, "hit (disc)", "#f87171", null, 2);
+    add(c.endK, `capture ends: ${END[c.end] || (c.unfinished ? "recording ended" : "")}`, "#64748b", [1, 3], 3);
+    if (c.tail) { if (c.tail.landAt >= 0) add(c.tail.landAt, "landing (disc)", "#f87171", [4, 2], 2); add(c.tail.end, `flight recording ends (${c.tail.why})`, "#64748b", [1, 3], 3); }
+    if (rb && rb.info) { add(c.start + rb.info.iRel, "release (rebuilt)", COL.rebuilt, null, 1); if (rb.info.iImp < rb.wz.length - 2) add(c.start + rb.info.iImp, "end of flight (rebuilt)", COL.rebuilt, [3, 2], 3); }
+  }
+  if (ds.file && ds.file.discCaps) for (const d of ds.file.discCaps) {
+    add(d.i + 415, `disc's record: trigger${d.h.counted ? " (counted)" : ""}`, "#22d3ee", [2, 2], 3);
+    if (d.h.rel !== 0xFFFF) add(d.i + d.h.rel, "disc's record: release", "#22d3ee", null, 3);
+  }
+  if (ds.file && ds.file.cap) { const h = ds.file.cap; if (h.rel !== 0xFFFF) add(h.rel, "disc's record: release", "#22d3ee", null, 3); if (h.liveRel !== 0xFFFF && h.liveRel !== h.rel) add(h.liveRel, "disc's record: live release", "#22d3ee", [2, 2], 3); }
+  return M;
+}
+function bands() {                                            // shaded stretches: the still moment, the flight window
+  const B = [], c = ds.caps[sel], R = c && c.R;
+  if (R && R.stillAt >= 0) B.push({ a: c.start + R.stillAt, b: c.start + R.stillAt + R.win, color: "rgba(52, 211, 153, 0.12)", label: "still moment" });
+  if (R && R.f1 > R.f0) B.push({ a: c.start + R.f0, b: c.start + R.f1, color: "rgba(96, 165, 250, 0.10)", label: "flight window (spin, wobble)" });
+  return B;
+}
+
+// ---------------------------------------------------------------- drawing
+const cv = $("cv"), tip = $("tip");
+let panels = [], layout = null, legendHits = [], hidden = new Set();
+const STATE_COL = { 1: ["#334155", "filling its 1 s history"], 2: ["#1f2937", "ready"], 3: ["#3f3f46", "waiting (300 ms after a throw)"], 4: ["#4c1d95", "waiting to settle"],
+  5: ["#b45309", "capturing: looking for the release"], 6: ["#0e7490", "capturing: the flight window"], 7: ["#155e75", "recording the flight (tail)"], 8: ["#7f1d1d", "readings lost"] };
+const CODE_COL = { 0: ["#34d399", "passes: left the hand"], 1: ["#475569", "the pull hasn't peaked over its line yet"], 2: ["#f87171", "hand force not gone (25 ms)"],
+  3: ["#c084fc", "steady force doesn't fit the spin"], 4: ["#fbbf24", "pulling again just after"], 5: ["#60a5fa", "spin not steady or too slow"] };
+function fitCanvas() {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1, w = Math.max(10, Math.round(r.width * dpr)), h = Math.max(10, Math.round(r.height * dpr));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); return { g, W: r.width, H: r.height };
+}
+const LEFT = 52, RIGHT = 10, TOPM = 30, AXIS = 20;
+function draw() {
+  const { g, W, H } = fitCanvas();
+  g.clearRect(0, 0, W, H);
+  legendHits = [];
+  if (!ds) { g.fillStyle = "#a7b2c0"; g.font = "14px system-ui"; g.fillText("Pick a throw on the left.", 20, 30); return; }
+  panels = seriesSet();
+  const n = ds.S.length / 6, i0 = Math.max(0, view.i0), i1 = Math.min(n - 1, view.i1), xw = W - LEFT - RIGHT;
+  const X = i => LEFT + (i - i0) / Math.max(1, i1 - i0) * xw;
+  const totW = panels.reduce((s, p) => s + p.w, 0), avail = H - TOPM - AXIS, gap = 8;
+  let y = TOPM;
+  layout = { X, i0, i1, xw, panels: [] };
+  const M = markers(), B = bands();
+  for (const p of panels) {
+    const h = (avail - gap * (panels.length - 1)) * p.w / totW, top = y, bot = y + h;
+    layout.panels.push({ p, top, bot });
+    g.fillStyle = "rgba(255,255,255,0.025)"; g.fillRect(LEFT, top, xw, h);
+    // shaded stretches
+    for (const b of B) { const a = Math.max(LEFT, X(b.a)), e = Math.min(LEFT + xw, X(b.b)); if (e > a) { g.fillStyle = b.color; g.fillRect(a, top, e - a, h); } }
+    if (p.state) { drawState(g, X, i0, i1, top, h); }
+    else {
+      // y range from the visible data
+      let lo = Infinity, hi = -Infinity;
+      const step = Math.max(1, Math.floor((i1 - i0) / 1500));
+      for (const s of p.series) { if (hidden.has(p.title + s.name)) continue; for (let i = i0; i <= i1; i += step) { const v = s.get(i); if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } } }
+      for (const l of p.hlines || []) if (l.v > hi && l.v < (hi > 0 ? hi * 1.6 + 1 : 5)) hi = l.v;
+      if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
+      if (p.min0) lo = Math.min(0, lo);
+      if (p.cap) hi = Math.min(hi, p.cap * 3);
+      if (p.sym) { const m = Math.max(Math.abs(lo), Math.abs(hi)); lo = -m; hi = m; }
+      if (hi - lo < 1e-6) { hi += 1; lo -= 1; }
+      const pad = (hi - lo) * 0.08; lo -= p.min0 && lo >= 0 ? 0 : pad; hi += pad;
+      const Y = v => bot - (v - lo) / (hi - lo) * h;
+      // grid
+      g.font = "10.5px system-ui"; g.fillStyle = "#7c8796"; g.strokeStyle = "rgba(255,255,255,0.07)"; g.lineWidth = 1; g.textAlign = "right";
+      for (const t of niceTicks(lo, hi, Math.max(2, Math.floor(h / 28)))) { const yy = Y(t); g.beginPath(); g.moveTo(LEFT, yy); g.lineTo(LEFT + xw, yy); g.stroke(); g.fillText(fmtTick(t), LEFT - 5, yy + 3.5); }
+      // maxed-out readings
+      if (p.sat) { g.fillStyle = "rgba(248, 113, 113, 0.20)"; const st = Math.max(1, Math.floor((i1 - i0) / xw)); for (let i = i0; i <= i1; i += st) { let any = false; for (let j = i; j < i + st && j <= i1; j++) if (p.sat(j)) { any = true; break; } if (any) g.fillRect(X(i), top, Math.max(1, X(i + st) - X(i)), h); } }
+      // limit lines
+      // (labels of lines close together are moved left, so they don't print over each other)
+      const lab = [];
+      for (const l of p.hlines || []) { if (l.v < lo || l.v > hi) continue; g.strokeStyle = l.color; g.globalAlpha = 0.75; g.setLineDash(l.dash || [5, 4]); g.beginPath(); g.moveTo(LEFT, Y(l.v)); g.lineTo(LEFT + xw, Y(l.v)); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+        if (l.label) {
+          const w = g.measureText(l.label).width + 14, yy = Y(l.v) - 3; let xr = LEFT + xw - 4;
+          while (lab.some(b => Math.abs(b.y - yy) < 11 && xr - w < b.x1 && xr > b.x0)) xr -= 40;
+          lab.push({ x0: xr - w, x1: xr, y: yy }); g.fillStyle = l.color; g.textAlign = "right"; g.fillText(l.label, xr, yy);
+        } }
+      // release test codes, under the hand-force graph
+      if (p.codes) drawCodes(g, X, i0, i1, bot - 6, 6, p.codes);
+      // the lines
+      g.save(); g.beginPath(); g.rect(LEFT, top, xw, h); g.clip();
+      for (const s of p.series) { if (hidden.has(p.title + s.name)) continue; drawSeries(g, s, X, Y, i0, i1, xw); }
+      g.restore();
+      p.Y = Y; p.lo = lo; p.hi = hi;
+    }
+    // markers
+    for (const m of M) { const x = X(m.i); if (x < LEFT || x > LEFT + xw) continue; g.strokeStyle = m.color; g.lineWidth = 1.2; g.setLineDash(m.dash || []); g.beginPath(); g.moveTo(x, top); g.lineTo(x, bot); g.stroke(); g.setLineDash([]); }
+    // title and key
+    g.font = "600 12px system-ui"; g.textAlign = "left"; g.fillStyle = "#e5e7eb"; g.fillText(p.title, LEFT + 6, top + 13);
+    let kx = LEFT + 12 + g.measureText(p.title).width + 10; g.font = "11px system-ui";
+    for (const s of p.series) {
+      const off = hidden.has(p.title + s.name), w = g.measureText(s.name).width + 22;
+      if (kx + w > LEFT + xw) break;
+      g.globalAlpha = off ? 0.35 : 1; g.strokeStyle = s.color; g.lineWidth = 2; g.setLineDash(s.dash || []); g.beginPath(); g.moveTo(kx, top + 9); g.lineTo(kx + 14, top + 9); g.stroke(); g.setLineDash([]);
+      g.fillStyle = "#cbd5e1"; g.fillText(s.name, kx + 17, top + 13); g.globalAlpha = 1;
+      legendHits.push({ x0: kx, x1: kx + w, y0: top + 1, y1: top + 16, key: p.title + s.name }); kx += w + 6;
+    }
+    y = bot + gap;
+  }
+  // marker labels at the top, staggered
+  g.font = "10.5px system-ui"; g.textAlign = "left";
+  const used = [[], [], [], []];
+  for (const m of M.slice().sort((a, b) => a.i - b.i)) {
+    const x = X(m.i); if (x < LEFT - 2 || x > LEFT + xw + 2) continue;
+    const w = g.measureText(m.label).width + 6; let row = 0;
+    while (row < 3 && used[row].some(([a, b]) => x < b && x + w > a)) row++;
+    used[row].push([x, x + w]);
+    g.fillStyle = m.color; g.fillText(m.label, Math.min(x + 3, LEFT + xw - w), 10 + row * 6.5 + (row ? 3 : 0));
+  }
+  // time axis
+  const t0 = i0 / ds.rate, t1 = i1 / ds.rate; g.fillStyle = "#94a3b8"; g.textAlign = "center"; g.font = "10.5px system-ui";
+  for (const t of niceTicks(t0, t1, Math.max(3, Math.floor(xw / 90)))) { const x = X(t * ds.rate); g.fillText(`${fmtTick(t)} s`, x, H - 6); }
+}
+function drawSeries(g, s, X, Y, i0, i1, xw) {
+  g.strokeStyle = s.color; g.lineWidth = s.width || 1.1; g.setLineDash(s.dash || []); g.globalAlpha = s.truth ? 0.8 : 1;
+  const per = (i1 - i0) / xw;
+  if (s.dots) { g.fillStyle = s.color; for (let i = i0; i <= i1; i += Math.max(1, Math.floor(per))) { const v = s.get(i); if (Number.isFinite(v)) g.fillRect(X(i) - 1, Y(v) - 1, 2, 2); } g.globalAlpha = 1; return; }
+  g.beginPath();
+  if (per <= 2) {
+    let pen = false;
+    for (let i = i0; i <= i1; i++) { const v = s.get(i); if (!Number.isFinite(v)) { pen = false; continue; } const x = X(i), y = Y(v); if (pen) g.lineTo(x, y); else { g.moveTo(x, y); pen = true; } }
+  } else {
+    // one column per pixel: the lowest and highest value in it
+    const cols = Math.ceil(xw);
+    let pen = false;
+    for (let c = 0; c < cols; c++) {
+      const a = Math.floor(i0 + c * per), b = Math.min(i1, Math.floor(i0 + (c + 1) * per));
+      let lo = Infinity, hi = -Infinity;
+      for (let i = a; i <= b; i++) { const v = s.get(i); if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+      if (!Number.isFinite(lo)) { pen = false; continue; }
+      const x = LEFT + c + 0.5;
+      if (pen) g.lineTo(x, Y(lo)); else { g.moveTo(x, Y(lo)); pen = true; }
+      g.lineTo(x, Y(hi));
+    }
+  }
+  g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+}
+function drawState(g, X, i0, i1, top, h) {
+  const st = ds.fw.state; let a = i0;
+  for (let i = i0 + 1; i <= i1 + 1; i++) {
+    if (i <= i1 && st[i] === st[a]) continue;
+    const c = STATE_COL[st[a]]; if (c) { g.fillStyle = c[0]; g.fillRect(X(a), top + 16, Math.max(1, X(i) - X(a)), h - 18); }
+    a = i;
+  }
+  // a small key
+  g.font = "10.5px system-ui"; let kx = LEFT + 160;
+  const seen = new Set(); for (let i = i0; i <= i1; i += Math.max(1, Math.floor((i1 - i0) / 400))) seen.add(st[i]);
+  for (const [k, [col, name]] of Object.entries(STATE_COL)) { if (!seen.has(+k)) continue; g.fillStyle = col; g.fillRect(kx, top + 4, 10, 8); g.fillStyle = "#cbd5e1"; g.fillText(name, kx + 13, top + 12); kx += g.measureText(name).width + 26; }
+  // repeated readings (FIFO slips) and gaps
+  g.fillStyle = "#e5e7eb";
+  if ((i1 - i0) < 3000) for (let i = i0; i <= i1; i++) if (ds.dup[i]) g.fillRect(X(i) - 0.5, top + h - 4, 1, 4);
+  if (ds.gap) { g.fillStyle = "#f87171"; for (let i = i0; i <= i1; i++) if (ds.gap[i]) g.fillRect(X(i) - 1, top + 14, 2, h - 14); }
+}
+function drawCodes(g, X, i0, i1, y, h, codes) {
+  for (let i = i0; i <= i1; i++) { const c = codes[i]; if (c < 0) continue; const col = CODE_COL[c]; if (!col) continue; g.fillStyle = col[0]; g.fillRect(X(i), y, Math.max(1, X(i + 1) - X(i)), h); }
+}
+function niceTicks(lo, hi, n) {
+  const span = hi - lo; if (!(span > 0)) return [lo];
+  const raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / mag, step = (m < 1.5 ? 1 : m < 3 ? 2 : m < 7 ? 5 : 10) * mag;
+  const out = []; for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step) out.push(+t.toFixed(10)); return out;
+}
+const fmtTick = t => Math.abs(t) >= 1000 ? t.toFixed(0) : Math.abs(t) >= 10 ? t.toFixed(0) : Math.abs(t) >= 1 ? +t.toFixed(1) + "" : +t.toFixed(2) + "";
+
+// ---------------------------------------------------------------- zoom, pan, hover
+function zoom(what) {
+  if (!ds) return;
+  const n = ds.S.length / 6, c = ds.caps[sel], r = ds.rate;
+  let a = 0, b = n - 1;
+  if (c && what === "cap") { a = c.start + 300; b = (c.tail && c.tail.end > 0 ? Math.min(c.tail.end, c.start + c.n + 0.6 * r) : c.start + c.n) + 0.1 * r; }
+  else if (c && what === "pull") { const rel = c.rel >= 0 ? c.rel : c.start + (c.R ? c.R.iRel : 500); a = Math.min(c.trig, rel) - 0.35 * r; b = rel + 0.15 * r; }
+  else if (c && what === "flight") { const rel = c.rel >= 0 ? c.rel : c.trig; a = rel - 0.05 * r; b = c.tail && c.tail.end > 0 ? c.tail.end + 0.1 * r : c.start + c.n + EXTRA; }
+  else if (!c && ds.sim && ds.sim.events && what !== "all") { a = 0; b = n - 1; }
+  view.i0 = Math.max(0, Math.floor(a)); view.i1 = Math.min(n - 1, Math.ceil(b)); if (view.i1 - view.i0 < 20) { view.i0 = 0; view.i1 = n - 1; }
+  draw();
+}
+for (const b of document.querySelectorAll("[data-zoom]")) b.onclick = () => zoom(b.dataset.zoom);
+$("showTruth").onchange = draw; $("showRebuilt").onchange = () => { draw(); renderSide(); };
+cv.addEventListener("wheel", e => {
+  if (!ds || !layout) return; e.preventDefault();
+  const r = cv.getBoundingClientRect(), x = e.clientX - r.left, n = ds.S.length / 6;
+  const at = view.i0 + (x - LEFT) / layout.xw * (view.i1 - view.i0), k = e.deltaY > 0 ? 1.25 : 0.8;
+  let a = at - (at - view.i0) * k, b = at + (view.i1 - at) * k;
+  if (b - a < 12) return;
+  view.i0 = Math.max(0, Math.round(a)); view.i1 = Math.min(n - 1, Math.round(b)); draw(); hover(e);
+}, { passive: false });
+let dragging = null;
+cv.addEventListener("pointerdown", e => {
+  const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  const hit = legendHits.find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  if (hit) { hidden.has(hit.key) ? hidden.delete(hit.key) : hidden.add(hit.key); draw(); return; }
+  dragging = { x: e.clientX, i0: view.i0, i1: view.i1 }; cv.classList.add("drag"); cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener("pointermove", e => {
+  if (dragging && ds) {
+    const n = ds.S.length / 6, span = dragging.i1 - dragging.i0, d = -(e.clientX - dragging.x) / layout.xw * span;
+    let a = dragging.i0 + d; a = Math.max(0, Math.min(n - 1 - span, a)); view.i0 = Math.round(a); view.i1 = Math.round(a + span); draw();
+  }
+  hover(e);
+});
+cv.addEventListener("pointerup", () => { dragging = null; cv.classList.remove("drag"); });
+cv.addEventListener("pointerleave", () => { tip.style.display = "none"; });
+cv.addEventListener("dblclick", () => zoom("cap"));
+window.addEventListener("resize", () => draw());
+function hover(e) {
+  if (!ds || !layout || dragging) { tip.style.display = "none"; return; }
+  const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (x < LEFT || x > LEFT + layout.xw) { tip.style.display = "none"; return; }
+  const i = Math.round(layout.i0 + (x - LEFT) / layout.xw * (layout.i1 - layout.i0));
+  const pl = layout.panels.find(q => y >= q.top && y <= q.bot);
+  if (!pl) { tip.style.display = "none"; return; }
+  draw();
+  const g = cv.getContext("2d"); g.strokeStyle = "rgba(255,255,255,0.5)"; g.lineWidth = 1; g.beginPath(); g.moveTo(layout.X(i), TOPM); g.lineTo(layout.X(i), r.height - AXIS); g.stroke();
+  const c = ds.caps[sel];
+  let html = `<b>${(i / ds.rate).toFixed(3)} s</b> · reading ${i}${c ? ` · ${((i - c.trig) / ds.rate * 1000).toFixed(0)} ms from the trigger` : ""}<br>`;
+  if (pl.p.state) {
+    const st = STATE_COL[ds.fw.state[i]]; html += st ? st[1] : "";
+    if (ds.dup[i]) html += "<br>this reading repeats the one before (a lost reading, filled)";
+  } else {
+    for (const s of pl.p.series) { if (hidden.has(pl.p.title + s.name)) continue; const v = s.get(i); if (Number.isFinite(v)) html += `<span style="color:${s.color}">■</span> ${s.name}: <b>${fmt(v, Math.abs(v) >= 100 ? 0 : 2)}</b><br>`; }
+    if (pl.p.codes && ds.fw.relCode[i] >= 0) { const cc = CODE_COL[ds.fw.relCode[i]]; html += `release test here: <span style="color:${cc[0]}">${cc[1]}</span>`; }
+  }
+  tip.innerHTML = html; tip.style.display = "block";
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = `${Math.min(r.width - tw - 6, x + 14)}px`; tip.style.top = `${Math.min(r.height - th - 6, Math.max(4, y - th / 2))}px`;
+}
+
+// ---------------------------------------------------------------- the rules, step by step
+const ok = b => b ? `<span class="pass">✓</span>` : `<span class="fail">✗</span>`;
+function relDetail(i, end, peak) {                             // the live release test at reading i, with its numbers (as firmware.js releaseAt)
+  const S = ds.S, AL = ds.info.alsb, GL = ds.info.glsb, L = ds.fw.level, v6 = ds.ver >= 6, K = FW.K;
+  const med = a => { const b = Float64Array.from(a).sort(), m = b.length; return !m ? 0 : m & 1 ? b[m >> 1] : 0.5 * (b[m / 2 - 1] + b[m / 2]); };
+  const e = Math.min(i + K.WIN, end), xs = [], ys = [], zs = [];
+  for (let k = i; k < e; k++) { xs.push(S[k * 6 + 3] * AL); ys.push(S[k * 6 + 4] * AL); zs.push(S[k * 6 + 5] * AL); }
+  const mx = med(xs), my = med(ys), mz = v6 ? med(zs) : 0, comp = k => Math.hypot(S[k * 6 + 3] * AL - mx, S[k * 6 + 4] * AL - my, S[k * 6 + 5] * AL - mz);
+  const hard = v6 && peak >= K.REL_HARD_PEAK_G, holdLim = hard ? K.REL_HARD_G : L.freeG, gapLim = hard ? K.REL_HARD_G + 0.5 : L.trigG;
+  let holdMax = 0; for (let k = i; k < Math.min(i + K.HOLD, end); k++) holdMax = Math.max(holdMax, comp(k));
+  let gapMax = 0; for (let k = i + K.HOLD; k < Math.min(i + K.HOLD + K.GAP, end); k++) gapMax = Math.max(gapMax, comp(k));
+  let sum = 0, lo = 1e9, hi = 0, pos = 0, neg = 0; const m = Math.min(i + K.STEADY_N, end);
+  for (let k = i; k < m; k++) { const g = S[k * 6 + 2] * GL, a = Math.abs(g); sum += a; lo = Math.min(lo, a); hi = Math.max(hi, a); if (g > 0) pos++; else neg++; }
+  const mean = sum / Math.max(1, m - i);
+  return { holdMax, holdLim, gapMax, gapLim, hard, spin: mean / 6, spinLo: lo / 6, spinHi: hi / 6, oneWay: !(pos && neg), steadyOk: !(mean < L.relMinRpm * 6 || (pos && neg) || hi - lo > 0.3 * mean + 60), steadyPart: Math.hypot(mx, my), lift: mz };
+}
+function renderSide() {
+  const el = $("rules"), c = ds && ds.caps[sel];
+  if (!ds) return;
+  const L = ds.fw.level, r = ds.rate, ms = k => `${(k / r * 1000).toFixed(0)} ms`, tS = i => `${(i / r).toFixed(3)} s`;
+  const li = [];
+  if (!c) {
+    li.push(`<li>${ok(false)} <b>No capture.</b> The force never reached ${L.trigG} g and the rotation never ${L.trigDps} °/s while the disc was ready (level ${ds.level}).
+      ${ds.sim && ds.sim.hand ? "That is right for handling." : ""}</li>`);
+    el.innerHTML = li.join(""); renderSix(null); draw(); return;
+  }
+  const S = ds.S, AL = ds.info.alsb, GL = ds.info.glsb, R = c.R || {}, i = c.trig;
+  const aM = Math.hypot(S[i * 6 + 3], S[i * 6 + 4], S[i * 6 + 5]) * AL, gM = Math.hypot(S[i * 6], S[i * 6 + 1], S[i * 6 + 2]) * GL;
+  li.push(`<li>${ok(true)} <b>Trigger</b> at ${tS(i)}: total force ${fmt(aM, 2)} g ${aM >= L.trigG ? "≥" : "<"} ${L.trigG} g, total rotation ${fmt(gM, 0)} °/s ${gM >= L.trigDps ? "≥" : "<"} ${L.trigDps} °/s.
+    The capture keeps the second before it (416 readings)${ds.sim && ds.sim.kPull != null ? `; the pull really started ${ms(Math.abs(i - ds.sim.kPull))} ${i >= ds.sim.kPull ? "before" : "after"} the trigger` : ""}.</li>`);
+  if (R.n) {
+    li.push(R.stillAt >= 0 ? `<li>${ok(true)} <b>Still moment</b> found ${ms(i - (c.start + R.stillAt))} before the trigger: 0.15 s with the rotation under 25 °/s and the force within 1 ± 0.15 g. It gives "down" and the gyro's zero error.</li>`
+      : `<li>${ok(false)} <b>No still moment</b> in the second before the trigger (the disc never sat still for 0.15 s). ${ds.ver >= 4 ? `"Down" comes from the ${R.seedKind === "quiet" ? "last quiet moment" : "least-moving moment"} instead, so hyzer, nose and launch can be off by a few degrees.` : ""}</li>`);
+    li.push(`<li>${ok(c.peakLive > L.relPeakG)} <b>The pull peaked</b> at ${fmt(R.peak, 1)} g (the disc's live count ${fmt(c.peakLive, 1)} g, from 0.5 s before the trigger); the release test needs over ${L.relPeakG} g.
+      ${R.flags & 4 ? "The accelerometer maxed out at 16 g in it." : ""}</li>`);
+  }
+  if (c.rel >= 0) {
+    const d = relDetail(c.rel, c.start + (c.nUntrimmed || c.n), c.peakLive);
+    const err = ds.sim && ds.sim.kRel != null ? ` – the true release was <b>${ms(Math.abs(c.rel - ds.sim.kRel))} ${c.rel >= ds.sim.kRel ? "earlier" : "later"}</b>` : "";
+    li.push(`<li>${ok(true)} <b>Release</b> found at ${tS(c.rel)}${err}. The test there, over the next 87 ms:
+      <br>· hand force gone for 25 ms: highest ${fmt(d.holdMax, 2)} g under ${d.holdLim} g ${ok(d.holdMax <= d.holdLim)}${d.hard ? " (the looser limit after a 12 g+ pull)" : ""}
+      <br>· no more pulling for 48 ms after: highest ${fmt(d.gapMax, 2)} g under ${fmt(d.gapLim, 1)} g ${ok(d.gapMax <= d.gapLim)}
+      <br>· steady part of the force ${fmt(d.steadyPart, 2)} g${ds.ver >= 6 ? `, lift ${fmt(d.lift, 2)} g` : ""} (taken off first)
+      ${L.relMinRpm > 0 ? `<br>· spinning freely one way at ${L.relMinRpm}+ rpm: ${fmt(d.spin, 0)} rpm (${fmt(d.spinLo, 0)}–${fmt(d.spinHi, 0)})${d.spinHi >= 381 ? " – the gyro maxed out" : ""} ${ok(d.steadyOk)}` : ""}
+      <br>The disc found it ${ms(c.relFoundAt - c.rel)} later (it has to see 87 ms ahead).</li>`);
+  } else {
+    const cnt = {}; for (let k = c.trig; k < c.start + (c.nUntrimmed || c.n); k++) { const v = ds.fw.relCode[k]; if (v > 0) cnt[v] = (cnt[v] || 0) + 1; }
+    const top = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
+    li.push(`<li>${ok(false)} <b>No release found.</b> ${top ? `Most often the test failed on: <i>${CODE_COL[top[0]][1]}</i> (${ms(top[1])} of the capture).` : ""}
+      ${ds.sim && ds.sim.kRel != null ? `At the true release (${tS(ds.sim.kRel)}) the test said: <i>${(CODE_COL[ds.fw.relCode[Math.round(ds.sim.kRel)]] || [, "not tested yet"])[1]}</i>.` : ""}</li>`);
+  }
+  const endTxt = c.end === 1 ? `a <b>hit</b> at ${tS(c.hitK)} (the force minus the flight's steady part passed 4 g${ds.ver >= 6 ? ", and the spin then dropped or it was over 12 g" : ""}); the capture keeps the readings up to 12 ms before it`
+    : c.end === 2 ? `the <b>flight window was full</b>: 12 readings to settle and 104 readings (0.25 s) of flight for the spin and wobble`
+    : c.end === 3 ? `the <b>3 s limit</b>, with no release found` : c.end === 4 ? "readings were lost" : "the recording ended first";
+  li.push(`<li>${ok(c.end === 1 || c.end === 2)} <b>Capture ended</b> at ${tS(c.endK)}: ${endTxt}.${ds.sim && ds.sim.kImp != null && c.end === 1 ? ` The true hit was ${ms(Math.abs(c.hitK - ds.sim.kImp))} ${c.hitK >= ds.sim.kImp ? "earlier" : "later"}.` : ""}</li>`);
+  if (R.n) {
+    const pOk = R.peak > L.minPeakG, sOk = R.spin >= L.minSpinRpm, rOk = !(R.flags & 8) || L.allowNoRelease;
+    li.push(`<li>${ok(c.counted)} <b>${c.counted ? (c.lowConf ? "Counted, low confidence" : "Counted as a throw") : c.quiet ? "Handling: ignored quietly" : "Not counted"}.</b>
+      Pull over ${L.minPeakG} g ${ok(pOk)}, spin ${L.minSpinRpm}+ rpm (${fmt(R.spin, 0)} rpm) ${ok(sOk)}, release found ${ok(rOk)}.
+      ${c.lowConf ? "A hard pull (8 g+) with the gyro over 1000 °/s for 0.1 s is kept even when a check fails, so the pages can rebuild it." : ""}
+      ${c.quiet ? "It ran to the 3 s limit with little spin and a gentle pull, so the disc saves only its header and shows no message." : ""}</li>`);
+  }
+  if (c.tail) li.push(`<li>${ok(c.tail.landAt >= 0)} <b>The rest of the flight</b> went to the disc's memory: ${c.tail.landAt >= 0 ? `landing found at ${tS(c.tail.landAt)}${ds.sim && ds.sim.kImp != null ? ` (true: ${tS(ds.sim.kImp)})` : ""}, then 0.25 s more` : `no landing found (${c.tail.why})`}. No new capture can start meanwhile.</li>`);
+  if (c.counted) li.push(`<li><b>Then</b>: 300 ms with no trigger${ds.ver >= 6 ? ", then not ready again until it has settled (0.12 s under 200 °/s and within 0.5 g of 1 g, or 8 s without spinning) – a roll or a bounce isn't a new throw" : " (firmware v5 is ready again after that, so a roll or bounce can count as a second throw)"}.</li>`);
+  if (ds.file && ds.file.cap) {
+    const h = ds.file.cap;
+    li.push(`<li><b>The disc's own record</b> of this capture: ${h.counted ? "counted" : `not counted (${WHY[h.why] || "?"})`}, release at reading ${h.rel === 0xFFFF ? "none" : h.rel}${c.start + (R.iRel || 0) === h.rel ? " – the same as worked out here ✓" : ` – here: ${R.found ? R.iRel : "none"}`}, ended: ${END[h.end] || h.end}. Recorded with log version ${h.ver}.</li>`);
+  }
+  el.innerHTML = li.join("");
+  renderSix(c);
+  draw();
+}
+function renderSix(c) {
+  const R = c && c.R, rb = c && $("showRebuilt").checked ? rebuildOf(c) : null, rbK = c && c.rbK && c.rbK.info && c.rbK.info.speedSrc === "drag" ? c.rbK : null;
+  const T = ds.sim && ds.sim.truth ? { speed: ds.sim.truth.speed, spin: ds.sim.P.rpm, hyzer: ds.sim.truth.hyzerAxis, nose: ds.sim.truth.noseAxis, launch: ds.sim.truth.launch, wobble: ds.sim.P.wobble } : null;
+  const fileRes = ds.file && ds.file.cap ? ds.file.cap.res : ds.file && ds.file.logThrow && ds.file.logThrow.c ? ds.file.logThrow.c.res : null;
+  const cols = [];
+  if (T) cols.push(["Truth", T, null]);
+  if (R && R.n) cols.push([`Disc (v${ds.ver})`, { speed: c.R.speed, spin: c.spinFloor && c.spinFloor > R.spin ? c.spinFloor : R.spin, hyzer: R.hyzer, nose: R.nose, launch: R.launch, wobble: R.wobble }, T]);
+  if (fileRes) cols.push(["Disc's record", { speed: fileRes[0], spin: fileRes[1], hyzer: fileRes[2], nose: fileRes[3], launch: fileRes[4], wobble: fileRes[5] }, T]);
+  if (rb && rb.six) cols.push(["Rebuilt", Object.assign({}, rb.six, { wobble: rb.info.wobble }), T]);
+  if (rbK && rbK.six) cols.push(["Rebuilt + drag", Object.assign({}, rbK.six, { wobble: rbK.info.wobble }), T]);
+  if (!cols.length) { $("six").innerHTML = `<p class="note">No numbers: ${c ? "the disc never analysed this capture" : "there is no capture"}.</p>`; $("sixNote").textContent = ""; return; }
+  const rows = [["Speed", "speed", "mph", 1, [2, 5]], ["Spin", "spin", "rpm", 0, [40, 120]], ["Hyzer", "hyzer", "°", 1, [1.5, 4]], ["Nose", "nose", "°", 1, [1.5, 4]], ["Launch", "launch", "°", 1, [1.5, 4]], ["Wobble", "wobble", "°", 1, [1, 2.5]]];
+  let h = `<table><tr><th></th>${cols.map(cc => `<th>${cc[0]}</th>`).join("")}</tr>`;
+  for (const [name, k, u, d, lim] of rows) {
+    h += `<tr><td>${name} <span class="note">${u}</span></td>`;
+    for (const [, v, ref] of cols) {
+      const x = v[k]; let e = "";
+      if (ref && Number.isFinite(x) && Number.isFinite(ref[k])) { const df = x - ref[k], cl = Math.abs(df) <= lim[0] ? "eg" : Math.abs(df) <= lim[1] ? "ew" : "eb"; e = `<span class="e ${cl}">${sgn(df, d)}</span>`; }
+      h += `<td>${fmt(x, d)}${e}</td>`;
+    }
+    h += "</tr>";
+  }
+  $("six").innerHTML = h + "</table>";
+  const notes = [];
+  if (rb && rb.info) notes.push(`Rebuilt: release ${rb.info.relSrc === "settled" ? "where the readings settle into flight" : "the disc's mark"}; spin from ${rb.info.spinSrc}${rb.info.spin && rb.info.spin.atLeast ? " (only a floor)" : ""}; speed from ${rb.info.speedSrc === "drag" ? "the air's drag" : "the pull"}${rb.info.underDetermined ? "; part of the pull was blind on both face axes, so the pull speed is a guess" : ""}.`);
+  if (R && R.fillAN > 0) notes.push(`Firmware v7 filled in ${R.fillAN} maxed readings (${R.fillAnchors} anchors).`);
+  if (c && c.rbErr) notes.push(`The rebuild failed: ${c.rbErr}`);
+  if (c && !c.counted) notes.push("No rebuild: the pages rebuild the throws the disc counts.");
+  if (!T) notes.push("No truth for a real recording: compare with a radar gun or a slow-motion video for speed and angles.");
+  $("sixNote").textContent = notes.join(" ");
+}
+
+// ---------------------------------------------------------------- many throws
+$("bGo").onclick = async () => {
+  if (!SC) return;
+  const lo = +$("bLo").value, hi = +$("bHi").value, N = +$("bN").value, what = $("bWhat").value;
+  const { ver } = rulesFor({ sim: true, info: { logVer: 7, sens: 5 } }), level = $("dLevel").value === "auto" ? 5 : +$("dLevel").value;
+  const r0 = +$("tR").value / 1000, hRange = [3, 8], K = parseFloat($("dK").value) || 0;
+  const R = mulberry(12345), rr = (a, b) => a + (b - a) * R(), pick = a => a[Math.floor(R() * a.length)];
+  const res = []; $("bGo").disabled = true;
+  for (let k = 0; k < N; k++) {
+    if (k % 3 === 0) { $("bState").textContent = `${k} of ${N}…`; await new Promise(f => setTimeout(f, 0)); }
+    const mph = rr(lo, hi), pull = pullFor(mph);
+    const P = { V: mph / MPH, rpm: Math.max(250, Math.min(1400, 300 + 13 * mph + rr(-150, 150))), dir: R() < 0.3 ? 1 : -1, T: pull.T * rr(0.85, 1.15), accelPeak: Math.min(0.8, pull.ap * rr(0.9, 1.1)),
+      snap: pull.snap, snapShape: pick(["late", "smooth", "early"]), turn: rr(40, 90), hyzer: rr(-8, 15), nose: rr(-4, 5), launch: rr(0, 14), wobble: rr(0.5, 6), wobbleRamp: 0.03, wobbleTau: 0.5,
+      r: r0, h: rr(...hRange) / 1000, net: 1000, table: "wraith", seed: 30000 + k, lead: 1.2 };
+    try {
+      const t = DiscGen.makeThrow(P), kRel = t.start + t.truth.kRel;
+      const o = FW.run(t.rawAll, { an: SC, ver, level, alsb: AL0, glsb: GL0, bias: BIAS_SIM, radius: r0, locked: true, rateHz: ver >= 6 ? 418.6 : 0 });
+      const c = o.captures.find(x => x.counted && x.start <= kRel && x.start + (x.nUntrimmed || x.n) > kRel); if (!c) { res.push({ mph, miss: true }); continue; }
+      const Sx = t.rawAll.slice(c.start * 6, Math.min(c.start + c.n + EXTRA, t.rawAll.length / 6) * 6), I = { alsb: AL0, glsb: GL0, bias: BIAS_SIM, radius: r0, rate: 418.6, kI: 0.99, odr: 416, biasTol: 1.5 };
+      const oo = { iRel: c.R.iRel < c.n ? c.R.iRel : undefined, spinRpm: c.R.spin > 0 ? c.R.spin : undefined };
+      const r1 = DiscTrack.reconstruct(Sx, I, oo), r2 = K > 0 ? DiscTrack.reconstruct(Sx, Object.assign({}, I, { kAero: K }), oo) : null;
+      const tr = { speed: t.truth.speed, spin: P.rpm, hyzer: t.truth.hyzerAxis, nose: t.truth.noseAxis, launch: t.truth.launch };
+      const e = six => six ? six[what] - tr[what] : NaN;
+      res.push({ mph, disc: e(c.R), pull: e(r1.six), drag: r2 ? e(r2.six) : NaN });
+    } catch (err) { console.warn(err); }
+  }
+  $("bGo").disabled = false; $("bState").textContent = `${res.length} throws (firmware v${ver}).`;
+  drawBatch(res, what);
+};
+function mulberry(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function drawBatch(res, what) {
+  const cvb = $("batchPlot"), r = cvb.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cvb.width = Math.round(r.width * dpr); cvb.height = Math.round(r.height * dpr);
+  const g = cvb.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height);
+  const S = [["disc", COL.disc, `the disc (v${rulesFor({ sim: true, info: {} }).ver})`], ["pull", COL.rebuilt, "rebuilt, pull only"], ["drag", "#38bdf8", "rebuilt + drag speedometer"]];
+  const ok = res.filter(x => !x.miss), all = ok.flatMap(x => S.map(s => x[s[0]])).filter(Number.isFinite);
+  if (!all.length) return;
+  const q = (a, p) => { const v = a.slice().sort((x, y) => x - y); return v[Math.min(v.length - 1, Math.floor(p * v.length))]; };
+  const lim = Math.max(1, q(all.map(Math.abs), 0.97)) * 1.1, x0 = Math.min(...ok.map(x => x.mph)), x1 = Math.max(...ok.map(x => x.mph));
+  const L0 = 48, W = r.width - L0 - 10, H = r.height - 30, X = v => L0 + (v - x0) / Math.max(1, x1 - x0) * W, Y = v => 10 + (lim - Math.max(-lim, Math.min(lim, v))) / (2 * lim) * H;
+  g.strokeStyle = "rgba(255,255,255,0.1)"; g.fillStyle = "#94a3b8"; g.font = "11px system-ui"; g.textAlign = "right";
+  for (const t of niceTicks(-lim, lim, 6)) { g.beginPath(); g.moveTo(L0, Y(t)); g.lineTo(L0 + W, Y(t)); g.stroke(); g.fillText(fmtTick(t), L0 - 5, Y(t) + 4); }
+  g.textAlign = "center"; for (const t of niceTicks(x0, x1, 8)) g.fillText(`${fmtTick(t)} mph`, X(t), H + 24);
+  g.strokeStyle = "rgba(255,255,255,0.4)"; g.beginPath(); g.moveTo(L0, Y(0)); g.lineTo(L0 + W, Y(0)); g.stroke();
+  for (const [k, col] of S) { g.fillStyle = col; for (const x of ok) if (Number.isFinite(x[k])) { g.beginPath(); g.arc(X(x.mph), Y(x[k]), 2.6, 0, TAU); g.fill(); } }
+  let kx = L0 + 8; g.textAlign = "left"; for (const [, col, name] of S) { g.fillStyle = col; g.fillRect(kx, 14, 10, 10); g.fillStyle = "#cbd5e1"; g.fillText(name, kx + 14, 23); kx += g.measureText(name).width + 34; }
+  // the table: typical and 90th percentile, by speed band
+  const unit = what === "speed" ? "mph" : what === "spin" ? "rpm" : "°", bandsB = [[0, 35], [35, 50], [50, 62], [62, 100]];
+  let h = `<table><tr><th>real speed</th>${S.map(s => `<th>${s[2]}</th>`).join("")}</tr>`;
+  for (const [a, b] of bandsB) {
+    const rs = ok.filter(x => x.mph >= a && x.mph < b); if (!rs.length) continue;
+    h += `<tr><td>${a}–${b === 100 ? "" : b} mph (${rs.length})</td>`;
+    for (const [k] of S) { const v = rs.map(x => x[k]).filter(Number.isFinite).map(Math.abs); h += `<td>${v.length ? `${q(v, 0.5).toFixed(1)} (${q(v, 0.9).toFixed(1)}) ${unit}` : "–"}</td>`; }
+    h += "</tr>";
+  }
+  $("batchTable").innerHTML = h + `</table><p class="note">Typical error, and in brackets the error 9 throws in 10 stay within. ${res.filter(x => x.miss).length ? `${res.filter(x => x.miss).length} throws were not counted.` : ""}</p>`;
+}
+
+// ---------------------------------------------------------------- start
+// A single-file copy (bench/build_lab.js) carries the analysis built in; the site's page reads it from sim.html.
+(window.DiscSimCodeBuilt ? Promise.resolve(window.DiscSimCodeBuilt(window.DiscTrack)) : DiscSimCode.load("sim.html")).then(code => {
+  SC = code; $("caps").innerHTML = `<span class="note">Ready. Pick a throw on the left.</span>`;
+  show(makeSimThrow);
+}).catch(err => {
+  $("caps").innerHTML = `<span class="note" style="color:var(--bad)">Could not load the disc's analysis from sim.html (${err.message}). Open this page from the same folder as sim.html, through a web server.</span>`;
+});
+window.discLab = { show, analyze, get ds() { return ds; }, get sel() { return sel; }, zoom, openFiles };
+</script>
+</body>
+</html>

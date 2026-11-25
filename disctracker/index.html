@@ -279,6 +279,8 @@
       <tbody id="histBody"></tbody>
     </table>
   </section>
+  <p class="note" id="morePages"><b>More pages:</b> <a href="sim.html">Computer simulator</a> · <a href="disc3d.html">3D disc</a> ·
+    <a href="calibrate.html">Calibrate</a> · <a href="lab.html">Lab</a> – every reading of a throw and every decision the disc made.</p>
   </div>
 
   <div id="tab-sim" class="tab hidden">
@@ -604,7 +606,8 @@
     </section>
 
   <p class="note"><b>On a computer?</b> <a href="sim.html">Open the big-screen simulator</a> – it connects to the disc
-    and flies every throw automatically. Or open the <a href="disc3d.html">3D page</a> on its own.</p>
+    and flies every throw automatically. Or open the <a href="disc3d.html">3D page</a> on its own, or the <a href="lab.html">lab</a>
+    to see every reading of a throw and every decision the disc made.</p>
   <p class="note">Version 2026-10-29. Roll/pitch are only accurate while the disc is still.
     Spin above ~382 rpm exceeds the gyro's range; the board then estimates it from the accelerometer.</p>
   </div>
@@ -1718,7 +1721,7 @@ function sim3dPost(m, transfer) { const f = sim3dFrame(); if (f && sim3dReady) f
 function sim3dOpen() {
   if (!sim3dFrame()) {
     const f = document.createElement("iframe");
-    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-11-01b"; f.allow = "fullscreen";
+    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-11-23"; f.allow = "fullscreen";
     $("sim3dWrap").appendChild(f);
   }
   sizeSim3d();
