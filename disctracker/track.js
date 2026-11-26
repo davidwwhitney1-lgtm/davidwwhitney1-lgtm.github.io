@@ -300,29 +300,40 @@ function findImpact(ax, ay, az, gzDps, satG, rel, n) {
   return spinEnd;
 }
 // The same end-of-flight rule, one reading at a time, for a flight that is still going (the page watching for the
-// landing, and a flight read back from the disc's memory). Counts in g and deg/s. The spin is compared with the
-// readings just before the hit, since a long flight slows by itself. feed() returns the hit's index once it is sure.
+// landing, and a flight read back from the disc's memory): the disc's own (disc_tracker_v2.ino tailFeed). Counts in g
+// and deg/s. The spin is compared with the readings just before the hit, since a long flight slows by itself. A big
+// hit also counts while a smaller one waits for the spin: a landing builds up over a few readings, and the first of
+// them is the landing. On the ground a disc can spin on for a second or more (issue #47), so a hit the spin didn't
+// confirm is kept: if the disc then lies still (its re-arm test: 50 readings under 200 deg/s and within 0.5 g of 1 g),
+// the landing was the first hit of the last bunch, hits less than 208 readings (0.5 s) apart. feed() returns the
+// hit's index once it is sure; `still` counts the readings the disc has lain still for (the disc ends its recording
+// at 50, with a landing or without one).
 class LandingWatch {
-  constructor(alsb, glsb, gzBias = 0) { this.al = alsb; this.gl = glsb; this.bz = gzBias; this.h = []; this.wait = null; }
+  constructor(alsb, glsb, gzBias = 0) { this.al = alsb; this.gl = glsb; this.bz = gzBias; this.h = []; this.wait = null; this.cand = null; this.candLast = 0; this.still = 0; }
   feed(c, i) {
     const a = [c[3] * this.al, c[4] * this.al, c[5] * this.al], sat = Math.abs(c[2]) >= GSAT, gz = Math.abs(c[2] * this.gl - this.bz), H = this.h;
-    let hit = null;
+    this.still = Math.hypot(c[0], c[1], c[2]) * this.gl < 200 && Math.abs(Math.hypot(a[0], a[1], a[2]) - 1) < 0.5 ? this.still + 1 : 0;
+    let hit = null, d = 0, jmp = 0;
+    if (H.length >= 12) {
+      const m = [0, 1, 2].map(j => median(H.map(x => x.a[j])));
+      d = Math.max(Math.hypot(a[0] - m[0], a[1] - m[1]), Math.abs(a[2] - m[2]));
+      if (d > 4.5) { let p = a; for (let q = H.length - 1; q >= H.length - 3; q--) { jmp = Math.max(jmp, Math.hypot(p[0] - H[q].a[0], p[1] - H[q].a[1], p[2] - H[q].a[2])); p = H[q].a; } }
+    }
+    const big = d > 12 && jmp >= 3;
     if (this.wait) {                                       // a hit is waiting for the spin to drop
       const w = this.wait, low = w.allSat ? !sat : gz < 0.85 * w.level;
       w.run = low ? w.run + 1 : 0;
-      if (w.run >= 3) { hit = w.at; this.wait = null; }
-      else if (i > w.at + 40) this.wait = null;
-    } else if (H.length >= 12) {
-      const m = [0, 1, 2].map(j => median(H.map(x => x.a[j]))), d = Math.max(Math.hypot(a[0] - m[0], a[1] - m[1]), Math.abs(a[2] - m[2]));
-      if (d > 4.5) {
-        let jmp = 0, p = a; for (let q = H.length - 1; q >= H.length - 3; q--) { jmp = Math.max(jmp, Math.hypot(p[0] - H[q].a[0], p[1] - H[q].a[1], p[2] - H[q].a[2])); p = H[q].a; }
-        if (d > 12 && jmp >= 3) hit = i;
-        else if (jmp >= 1.2) {
-          const allSat = H.every(x => x.sat), level = median(H.map(x => x.gz));
-          if (allSat || level > 120) this.wait = { at: i, allSat, level, run: 0 }; else hit = i;
-        }
+      if (w.run >= 3 || big) { hit = w.at; this.wait = null; }
+      else if (i > w.at + 40) {                            // not confirmed: kept, in case the disc then lies still
+        if (this.cand == null || w.at - this.candLast > 208) this.cand = w.at;
+        this.candLast = w.at; this.wait = null;
       }
+    } else if (big) hit = i;
+    else if (d > 4.5 && jmp >= 1.2) {
+      const allSat = H.every(x => x.sat), level = median(H.map(x => x.gz));
+      if (allSat || level > 120) this.wait = { at: i, allSat, level, run: 0 }; else hit = i;
     }
+    if (hit == null && this.still >= 50 && this.cand != null) { hit = this.cand; this.cand = null; }
     H.push({ a, sat, gz }); if (H.length > 36) H.shift();
     return hit;
   }

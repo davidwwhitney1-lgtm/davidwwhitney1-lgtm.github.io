@@ -398,7 +398,7 @@
 </div>
 
 <script src="flight.js?v=2026-11-01"></script>
-<script src="track.js?v=2026-11-01b"></script>
+<script src="track.js?v=2026-11-26"></script>
 <script type="module">
 import * as THREE from "three";
 import { Line2 } from "three/addons/lines/Line2.js";
@@ -1269,7 +1269,9 @@ function fillAccel(S, I, P, iStart, iRel, n, found, c0, wave, gzAt, dt) {
   }
   close();
   // crossing sizes: the clear axis passed zero at |slope| = M x (how fast the force turns against the disc), and that
-  // turn is the force's own turn (from the nearest anchors with a sure direction) minus the spin
+  // turn is the force's own turn (from the nearest anchors with a sure direction) minus the spin. At most 3 times the
+  // maxed axis's own reading (issue #44): while the hand grips the disc the force turns with it, that turn is then
+  // nearly nothing, and the size blew up (a 75 mph throw read 176 mph).
   const sure = j => A[j].kind !== 2;
   for (let j = 0; j < A.length; j++) {
     const a = A[j]; if (a.kind !== 1) continue;
@@ -1278,7 +1280,7 @@ function fillAccel(S, I, P, iStart, iRel, n, found, c0, wave, gzAt, dt) {
     const P0 = A[p >= 0 ? p : j], Q0 = A[q < A.length ? q : j];
     if (!(Q0.t > P0.t)) continue;
     const rel = (Q0.psi - P0.psi) / ((Q0.t - P0.t) * dt) - a.wz;
-    if (Math.sign(rel) === a.want && Math.abs(rel) * dt >= 0.005) a.M = Math.max(a.floor, Math.abs(a.sl) / (Math.abs(rel) * dt));
+    if (Math.sign(rel) === a.want && Math.abs(rel) * dt >= 0.005) a.M = Math.min(3 * a.floor, Math.max(a.floor, Math.abs(a.sl) / (Math.abs(rel) * dt)));
   }
   // the rest: size from the nearest known ones (interpolated, or held at the ends); a one-reading crossing then gets
   // its exact direction from that size

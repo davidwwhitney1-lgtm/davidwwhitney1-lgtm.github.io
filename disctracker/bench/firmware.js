@@ -35,7 +35,7 @@ const K = {
   IMPACT_G: 4.0, IMPACT_TRIM: 5, IMPACT_BIG_G: 12, REL_HARD_PEAK_G: 12, REL_HARD_G: 5,
   HARD_PULL_G: 8, HARD_SPIN_DPS: 1000, HARD_SPIN_N: 40, QUIET_MAX_G: 6,
   REFRACTORY_MS: 300, REARM_STILL_N: 50, REARM_MAX_MS: 8000, REARM_DPS: 200, REARM_G: 0.5,
-  TAIL_MAX: 4160, TAIL_AFTER: 104, LAND_G: 4.5, LAND_BIG_G: 12, LAND_JUMP_G: 1.2, LAND_BIG_JUMP: 3, LAND_HIST: 36, LAND_CONFIRM: 40,
+  TAIL_MAX: 4160, TAIL_AFTER: 104, LAND_G: 4.5, LAND_BIG_G: 12, LAND_JUMP_G: 1.2, LAND_BIG_JUMP: 3, LAND_HIST: 36, LAND_CONFIRM: 40, LAND_GAP: 208,
   SAT: 32200, MED_MAX: 64, BIAS_TOL: 1.5,
 };
 // What the disc is doing at each sample.
@@ -143,7 +143,7 @@ function create(cfg) {
     // the spin radius learned from a throw the gyro measured (not when the calibration page locked it)
     if (!cfg.locked && R.rLearn > 0.0005 && R.rLearn < 0.03) { radius = radius > 0 ? 0.7 * radius + 0.3 * R.rLearn : R.rLearn; c.radiusAfter = radius; }
     if (c.end === END.WINDOW) {                               // still in the air: record the rest of the flight
-      tail = { start: k + 1, count: 0, landAt: 0, hist: [], wait: null, link: c };
+      tail = { start: k + 1, count: 0, landAt: 0, hist: [], wait: null, cand: 0, candLast: 0, still: 0, link: c };
       c.tail = { start: k + 1, end: -1, landAt: -1, why: "" };
     }
   };
@@ -155,7 +155,11 @@ function create(cfg) {
     rearmSeq = k; rearmStillN = 0;
   };
   // tailFeed(): the landing. v6+: a reading LAND_G from the middle of the readings before it (up to LAND_HIST of them),
-  // with a jump, and the spin then dropping, or LAND_BIG_G on its own. v5: LAND_G from the median of the last 12.
+  // with a jump, and the spin then dropping, or LAND_BIG_G on its own - also while a smaller hit waits for the spin: a
+  // landing builds up over a few readings, and the first of them is the landing. A hit the spin didn't confirm (on the
+  // ground a disc can spin on for a second or more) is kept: if the disc then lies still (the re-arm test), the landing
+  // was the first hit of the last bunch, hits no more than LAND_GAP apart (a bounce doesn't move it, wobble long before
+  // doesn't count). Lying still with no hit at all ends the recording too. v5: LAND_G from the median of the last 12.
   const tailFeed = k => {
     const t = tail; t.count++;
     const a = [ax(k), ay(k), az(k)], gsat = sat(S[k * 6 + 2]), g = Math.abs(gz(k) - bias[2]);
@@ -167,24 +171,36 @@ function create(cfg) {
       }
       t.hist.push({ a }); if (t.hist.length > 12) t.hist.shift();
     } else {
-      if (!t.landAt && t.wait) {
-        const low = t.wait.sat ? !gsat : g < 0.85 * t.wait.level;
-        t.wait.run = low ? t.wait.run + 1 : 0;
-        if (t.wait.run >= 3) t.landAt = t.wait.at;
-        else if (t.count > t.wait.at + K.LAND_CONFIRM) t.wait = null;
-      } else if (!t.landAt && t.hist.length >= 12) {
-        let jump = 0, p = a;
-        for (let q = 1; q <= 3 && q <= t.hist.length; q++) { const h = t.hist[t.hist.length - q].a; jump = Math.max(jump, Math.hypot(p[0] - h[0], p[1] - h[1], p[2] - h[2])); p = h; }
-        if (jump >= K.LAND_JUMP_G) {
-          const m = [0, 1, 2].map(j => medianOf(t.hist.map(h => h.a[j])));
-          const d = Math.max(Math.hypot(a[0] - m[0], a[1] - m[1]), Math.abs(a[2] - m[2]));
-          landDev[k] = d;
-          if (d > K.LAND_BIG_G && jump >= K.LAND_BIG_JUMP) t.landAt = t.count;
-          else if (d > K.LAND_G) {
-            const allSat = t.hist.every(h => h.sat), level = medianOf(t.hist.map(h => h.g));
-            if (allSat || level > 120) t.wait = { sat: allSat, level, at: t.count, run: 0 };
-            else t.landAt = t.count;
+      t.still = rot(k) < K.REARM_DPS && Math.abs(mag(k) - 1) < K.REARM_G ? t.still + 1 : 0;
+      if (!t.landAt) {
+        let jump = 0, d = 0;
+        if (t.hist.length >= 12) {
+          let p = a;
+          for (let q = 1; q <= 3 && q <= t.hist.length; q++) { const h = t.hist[t.hist.length - q].a; jump = Math.max(jump, Math.hypot(p[0] - h[0], p[1] - h[1], p[2] - h[2])); p = h; }
+          if (jump >= K.LAND_JUMP_G) {
+            const m = [0, 1, 2].map(j => medianOf(t.hist.map(h => h.a[j])));
+            d = Math.max(Math.hypot(a[0] - m[0], a[1] - m[1]), Math.abs(a[2] - m[2]));
+            landDev[k] = d;
           }
+        }
+        const big = d > K.LAND_BIG_G && jump >= K.LAND_BIG_JUMP;
+        if (t.wait) {
+          const low = t.wait.sat ? !gsat : g < 0.85 * t.wait.level;
+          t.wait.run = low ? t.wait.run + 1 : 0;
+          if (t.wait.run >= 3 || big) t.landAt = t.wait.at;
+          else if (t.count > t.wait.at + K.LAND_CONFIRM) {
+            if (!t.cand || t.wait.at - t.candLast > K.LAND_GAP) t.cand = t.wait.at;
+            t.candLast = t.wait.at; t.wait = null;
+          }
+        } else if (big) t.landAt = t.count;
+        else if (d > K.LAND_G) {
+          const allSat = t.hist.every(h => h.sat), level = medianOf(t.hist.map(h => h.g));
+          if (allSat || level > 120) t.wait = { sat: allSat, level, at: t.count, run: 0 };
+          else t.landAt = t.count;
+        }
+        if (!t.landAt && t.still >= K.REARM_STILL_N) {
+          if (t.cand) t.landAt = t.cand;
+          else { endTail(k, "lying still"); return; }
         }
       }
       t.hist.push({ a, g, sat: gsat }); if (t.hist.length > K.LAND_HIST) t.hist.shift();

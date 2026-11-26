@@ -3,9 +3,10 @@
 //
 // A rigid disc: held still, a slow reach-back, a fast pull along a path that curves and then straightens, a wrist
 // snap that spins it up in the last few hundredths of a second, release, free flight (drag, lift, torque-free wobble)
-// and a net. The IMU sits r off the disc's axis and h above its middle. Sensor model: gyro +-2294 deg/s, accel +-16 g,
-// noise, zero errors, the chip's real clock (418.6 samples/s) and ~4 % repeated samples (FIFO slips), all in raw
-// counts in DISC axes, as the disc streams them.
+// and a net (or the ground: stopTime, the time the disc takes to stop, 0.06 s in a net, longer for a skid; spinTauHit,
+// how fast the spin then dies away). The IMU sits r off the disc's axis and h above its middle. Sensor model: gyro
+// +-2294 deg/s, accel +-16 g, noise, zero errors, the chip's real clock (418.6 samples/s) and ~4 % repeated samples
+// (FIFO slips), all in raw counts in DISC axes, as the disc streams them.
 (function (G) {
 "use strict";
 const D2R = Math.PI / 180, R2D = 180 / Math.PI, GMS = 9.80665, TAU = 2 * Math.PI;
@@ -182,7 +183,7 @@ function makeThrow(o = {}) {
   const kD = 0.5 * 1.225 * P.cd * 0.057 / 0.175, kL = 0.5 * 1.225 * P.cl * 0.057 / 0.175, g = [0, 0, -GMS];
   const pRel = p.slice();
   let t = t3, impT = null, vImp = null, dImp = null;
-  const tauI = 0.06, tEnd = () => impT != null ? impT + tauI + P.afterHit : t + 1;
+  const tauI = P.stopTime || 0.06, tEnd = () => impT != null ? impT + tauI + P.afterHit : t + 1;
   const aero = (v, q) => {
     const sp = norm(v); if (sp < 1e-6) return [0, 0, 0];
     const vh = mul(v, 1 / sp), n = qrot(q, [0, 0, 1]);
@@ -200,7 +201,7 @@ function makeThrow(o = {}) {
     }
     return aeroF;
   };
-  while (t < tEnd() && t < t3 + 3) {
+  while (t < tEnd() && t < t3 + (P.maxAfter || 3)) {          // (maxAfter: seconds simulated after the release, 3 unless set)
     let acc;
     if (impT == null && norm(sub(p, pRel)) >= P.net) { impT = t; vImp = v.slice(); dImp = mul(v, 1 / norm(v)); }
     if (impT == null) acc = add(g, aero(v, q));

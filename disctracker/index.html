@@ -1721,7 +1721,7 @@ function sim3dPost(m, transfer) { const f = sim3dFrame(); if (f && sim3dReady) f
 function sim3dOpen() {
   if (!sim3dFrame()) {
     const f = document.createElement("iframe");
-    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-11-23"; f.allow = "fullscreen";
+    f.id = "sim3d"; f.title = "3D simulator"; f.src = "disc3d.html?embed=1&v=2026-11-26"; f.allow = "fullscreen";
     $("sim3dWrap").appendChild(f);
   }
   sizeSim3d();

@@ -218,10 +218,10 @@
 </div>
 
 <script src="flight.js?v=2026-11-01"></script>
-<script src="track.js?v=2026-11-01b"></script>
-<script src="bench/gen.js?v=2026-11-23"></script>
+<script src="track.js?v=2026-11-26"></script>
+<script src="bench/gen.js?v=2026-11-26"></script>
 <script src="bench/handling.js?v=2026-11-23"></script>
-<script src="bench/firmware.js?v=2026-11-25"></script>
+<script src="bench/firmware.js?v=2026-11-26"></script>
 <script src="bench/simcode.js?v=2026-11-23"></script>
 <script>
 "use strict";
@@ -933,7 +933,7 @@ function renderSide() {
       ${c.lowConf ? "A hard pull (8 g+) with the gyro over 1000 °/s for 0.1 s is kept even when a check fails, so the pages can rebuild it." : ""}
       ${c.quiet ? "It ran to the 3 s limit with little spin and a gentle pull, so the disc saves only its header and shows no message." : ""}</li>`);
   }
-  if (c.tail) li.push(`<li>${ok(c.tail.landAt >= 0)} <b>The rest of the flight</b> went to the disc's memory: ${c.tail.landAt >= 0 ? `landing found at ${tS(c.tail.landAt)}${ds.sim && ds.sim.kImp != null ? ` (true: ${tS(ds.sim.kImp)})` : ""}, then 0.25 s more` : `no landing found (${c.tail.why})`}. No new capture can start meanwhile.</li>`);
+  if (c.tail) li.push(`<li>${ok(c.tail.landAt >= 0)} <b>The rest of the flight</b> went to the disc's memory: ${c.tail.landAt >= 0 ? `landing found at ${tS(c.tail.landAt)}${ds.sim && ds.sim.kImp != null ? ` (true: ${tS(ds.sim.kImp)})` : ""}, then 0.25 s more (or until the disc lay still, if the spin didn't drop at once)` : c.tail.why === "lying still" ? "no jolt passed as the landing; the recording ended once the disc lay still" : `no landing found (${c.tail.why})`}. No new capture can start meanwhile.</li>`);
   if (c.counted) li.push(`<li><b>Then</b>: 300 ms with no trigger${ds.ver >= 6 ? ", then not ready again until it has settled (0.12 s under 200 °/s and within 0.5 g of 1 g, or 8 s without spinning) – a roll or a bounce isn't a new throw" : " (firmware v5 is ready again after that, so a roll or bounce can count as a second throw)"}.</li>`);
   if (ds.file && ds.file.cap) {
     const h = ds.file.cap;
@@ -1137,9 +1137,10 @@ async function lvAck(recNo, boot, again) {
   LV.acking.delete(key);
 }
 // Ready to confirm a throw of the disc's: every reading of it is here - and, for a counted throw that ended in the air,
-// every reading of its flight tail too (to the landing, 10 s at most). A far throw usually goes out of range during that
-// flight, after its capture has come in, and only an unconfirmed throw comes back with its flight after a reconnect.
-// The landing is the one this page's copy of the disc's loop found, while it runs the disc's own rules; else wait 10 s.
+// every reading of its flight tail too (to the landing or the disc lying still, 10 s at most). A far throw usually goes
+// out of range during that flight, after its capture has come in, and only an unconfirmed throw comes back with its
+// flight after a reconnect. The tail's end is the one this page's copy of the disc's loop found, while it runs the
+// disc's own rules; else wait 10 s.
 const TAIL_MAX_N = 4160;                                        // the disc's longest flight tail, in readings
 function lvAckReady(d) {
   const h = d.h, I = LV.info, L = LV.ds;
@@ -1147,7 +1148,7 @@ function lvAckReady(d) {
   if (!h.counted || h.end !== 2) return true;                   // no flight tail
   const own = L && I && L.caps && L.ver === (I.logVer >= 6 ? I.logVer : 5) && L.level === (I.sens || 5);
   const c = own ? L.caps.find(q => q.start === d.i) : null;
-  if (c && c.tail && (c.tail.why === "landed" || c.tail.why === "10 s limit")) return lvAllHere(d.i, c.tail.end - d.i + 1);
+  if (c && c.tail && ["landed", "lying still", "10 s limit"].includes(c.tail.why)) return lvAllHere(d.i, c.tail.end - d.i + 1);
   return lvAllHere(d.i, h.n + TAIL_MAX_N);
 }
 function lvAckWhenReady() { for (const d of LV.discCaps) if (!LV.done.has(d.key) && lvAckReady(d)) lvAck(d.h.recNo, d.h.boot); }
